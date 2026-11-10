@@ -1,0 +1,22 @@
+{
+  "v": 1,
+  "id": "00000000-0000-4000-8000-000000000001",
+  "from": "aaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "to": "77777777777777777777777774",
+  "body": {
+    "type": "session_list",
+    "request_id": "00000000-0000-4000-8000-000000000001",
+    "sessions": [
+      {
+        "session_id": null,
+        "agent": "fake",
+        "adapter_session_id": "external",
+        "cwd": "/tmp",
+        "title": "Work",
+        "updated_at": "2026-11-10T00:00:00Z",
+        "navarch_started": false
+      }
+    ],
+    "truncated": false
+  }
+}

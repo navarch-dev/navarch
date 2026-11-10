@@ -1,0 +1,16 @@
+{
+  "v": 1,
+  "id": "00000000-0000-4000-8000-000000000001",
+  "from": "aaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "to": "77777777777777777777777774",
+  "body": {
+    "type": "probe_report",
+    "capabilities": {
+      "os": "test",
+      "arch": "test",
+      "agents": [],
+      "repositories": [],
+      "running_turns": 0
+    }
+  }
+}

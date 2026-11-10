@@ -1,0 +1,48 @@
+[package]
+name = "navarch-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "navarch"
+path = "src/main.rs"
+
+[dependencies]
+zeroize.workspace = true
+navarch-relay.workspace = true
+serde.workspace = true
+toml.workspace = true
+tempfile.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+navarch-hub.workspace = true
+navarch-store.workspace = true
+navarch-transport.workspace = true
+navarch-crypto.workspace = true
+
+anyhow.workspace = true
+clap.workspace = true
+navarch-worker.workspace = true
+navarch-proto.workspace = true
+navarch-acp.workspace = true
+navarch-policy.workspace = true
+tokio.workspace = true
+serde_json.workspace = true
+async-trait.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+rustix.workspace = true
+
+[dev-dependencies]
+plist.workspace = true
+configparser.workspace = true
+base64.workspace = true
+uuid.workspace = true
+navarch-acp = { workspace = true, features = ["testing"] }
+tempfile.workspace = true
+
+[lints]
+workspace = true
