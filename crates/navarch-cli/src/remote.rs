@@ -1,7 +1,7 @@
 //! Pairing and relay startup wiring. Secrets are never formatted as diagnostics.
 use anyhow::{Context, Result, bail};
 use navarch_crypto::{Identity, PairCode, PairInfo, PairRole, Pairing, StaticKey};
-use navarch_transport::{RelayConnector, RelaySocket, open_pair_room, pair_room};
+use navarch_transport::{RelayConnector, RelaySocket, pair_room, reserve_pair_room};
 use serde::{Deserialize, Serialize};
 use std::{io::Write, path::Path, sync::Arc};
 /// Hub's relay configuration, in hub.toml.
@@ -59,11 +59,10 @@ pub async fn pair(relay: Option<String>) -> Result<u8> {
     let url = relay
         .or(config.relay.clone())
         .context("set relay in hub.toml or pass --relay")?;
-    let code = PairCode::generate();
     // A transient relay identity avoids replacing the running hub connection.
     // The persistent identity and static key are bound by the encrypted transcript.
     let mut socket = RelaySocket::connect(&url, &Identity::generate()).await?;
-    open_pair_room(&mut socket, code.room()).await?;
+    let code = reserve_pair_room(&mut socket).await?;
     let pairing = Pairing::new(PairRole::Hub, &code, info(&home, "hub".into())?, 0)?;
     println!("{}", code.display().as_str());
     let peer = pair_room(&mut socket, code.room(), PairRole::Hub, pairing).await?;
@@ -94,13 +93,8 @@ pub async fn join(code: String, relay: String) -> Result<u8> {
     if home.join("worker/hub.json").exists() {
         bail!("worker already paired; refusing to replace pinned hub keys");
     }
-    let config = navarch_worker::config::Config::load(&home)?;
-    let pairing = Pairing::new(
-        PairRole::Worker,
-        &code,
-        info(&home, config.display_name)?,
-        0,
-    )?;
+    let name = join_display_name(&home)?;
+    let pairing = Pairing::new(PairRole::Worker, &code, info(&home, name)?, 0)?;
     let mut socket = RelaySocket::connect(&relay, &Identity::generate()).await?;
     let hub = pair_room(&mut socket, code.room(), PairRole::Worker, pairing).await?;
     write(
@@ -109,6 +103,9 @@ pub async fn join(code: String, relay: String) -> Result<u8> {
         false,
     )?;
     eprintln!("Joined hub; approval is required before remote work.");
+    eprintln!(
+        "Next: run `navarch worker init`, edit worker.toml and worker-policy.toml, then run `navarch worker serve`."
+    );
     Ok(0)
 }
 /// Select a pinned remote connection when no explicit local socket is configured.
@@ -136,4 +133,79 @@ pub fn worker_connector(
             display_name,
         },
     }))
+}
+
+fn host_display_name(host: &str) -> String {
+    let mut name = String::new();
+    for ch in host.chars().filter(|ch| !ch.is_control()) {
+        if name.len() + ch.len_utf8() > 200 {
+            break;
+        }
+        name.push(ch);
+    }
+    name
+}
+fn join_display_name(home: &Path) -> Result<String> {
+    // Only an absent file selects the OS hostname. Invalid configured names
+    // remain errors in pairing validation, rather than being repaired.
+    match std::fs::read_to_string(home.join("worker.toml")) {
+        Ok(text) => Ok(
+            navarch_worker::config::Config::parse(&text, &home.join("worker.toml"))?.display_name,
+        ),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            let host = system_hostname()?;
+            let name = host_display_name(&host);
+            if name.is_empty() {
+                bail!(
+                    "system hostname has no displayable characters; configure display_name in worker.toml"
+                );
+            }
+            Ok(name)
+        }
+        Err(error) => Err(error.into()),
+    }
+}
+#[cfg(unix)]
+fn system_hostname() -> Result<String> {
+    Ok(rustix::system::uname()
+        .nodename()
+        .to_str()
+        .context("system hostname is not UTF-8")?
+        .to_owned())
+}
+#[cfg(not(unix))]
+fn system_hostname() -> Result<String> {
+    bail!("hostname lookup is unsupported on this platform; configure display_name in worker.toml")
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+    #[test]
+    fn hostname_is_control_free_and_bounded_on_utf8_boundary() {
+        assert_eq!(host_display_name("host\n\t\u{7f}\u{85}name"), "hostname");
+        assert_eq!(host_display_name(&"界".repeat(100)), "界".repeat(66));
+        assert_eq!(host_display_name(&"x".repeat(201)).len(), 200);
+        assert!(host_display_name("\n\t").is_empty());
+    }
+    #[test]
+    fn join_uses_hostname_only_for_missing_configuration() {
+        let home = tempfile::tempdir().unwrap();
+        let host = system_hostname().unwrap();
+        assert_eq!(
+            join_display_name(home.path()).unwrap(),
+            host_display_name(&host)
+        );
+        std::fs::write(
+            home.path().join("worker.toml"),
+            "display_name = 'configured'",
+        )
+        .unwrap();
+        assert_eq!(join_display_name(home.path()).unwrap(), "configured");
+        std::fs::write(home.path().join("worker.toml"), "display_name = ''").unwrap();
+        assert_eq!(join_display_name(home.path()).unwrap(), "");
+        std::fs::write(home.path().join("worker.toml"), "invalid toml").unwrap();
+        assert!(join_display_name(home.path()).is_err());
+    }
 }

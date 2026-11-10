@@ -10,9 +10,11 @@ Navarch lets a single orchestrator session dispatch work to coding agents (Claud
 
 ## Status
 
-**Early design. Nothing here is runnable yet.**
+**Pre-release. It works end to end on the author's machines, but there is no packaged release and no security audit.**
 
-The protocol choices below have been validated in small experiments, but there is no released code. Expect everything to change.
+What exists today: a hub, a worker and a relay in one binary; pairing with a one-time code; an end-to-end encrypted channel; local policy on every worker; hub tools exposed over MCP. See [docs/](docs/) for setup: [worker](docs/worker.md), [hub](docs/hub.md), [relay](docs/relay.md), [security](docs/security.md), [design](docs/DESIGN.md).
+
+Build from source with `cargo build --release -p navarch-cli`. Interfaces and file formats can still change.
 
 ## What it is for
 
@@ -79,15 +81,16 @@ Navarch is, by nature, a way to make another machine run work. Treat it accordin
 - Do not run workers on production servers.
 - A relay you do not operate can see which machines talk to each other and when, though not what they say.
 
-A fuller threat model will be published before the first release. Please report security issues privately rather than in a public issue.
+The threat model is in [docs/security.md](docs/security.md). The cryptographic design has not been independently audited. Please report security issues privately rather than in a public issue.
 
 ## Roadmap
 
-- [ ] Single machine: hub plus a local worker driving agents over ACP
-- [ ] Relay, pairing and end-to-end encryption
-- [ ] Hub tools for the orchestrator, completion notifications
+- [x] Single machine: hub plus a local worker driving agents over ACP
+- [x] Relay, pairing and end-to-end encryption
+- [x] Hub tools for the orchestrator
+- [ ] Push notifications to the orchestrator when a turn finishes
 - [ ] Direct connections on the same local network
-- [ ] Packaging, install script and documentation
+- [ ] Packaging, install script, independent security review
 
 ## Non-goals
 

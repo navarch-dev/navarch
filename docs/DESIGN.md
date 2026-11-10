@@ -259,16 +259,16 @@ The relay sees the room number and ciphertext. It cannot derive the key.
 - A WebSocket server (`/v1/ws`). Plain HTTP; terminate TLS in front of it.
 - On connect the relay sends a random challenge; the client replies with its Ed25519 public key and a signature. The relay derives the `MachineId` from the key, so IDs cannot be spoofed.
 - Routing frame: `{ "to": MachineId, "payload": base64 }`. The relay forwards to the connection registered for `to`, adding `from`. If `to` is offline the sender gets `{ "error": "offline", "to": ... }`. Nothing is buffered or written to disk.
-- Pairing rooms: `{ "room": "RRRR", ... }` frames connect exactly two clients. Rooms expire after 10 minutes or one failed confirmation. Room numbers remain tombstoned for the relay process lifetime; a restart invalidates outstanding rooms.
+- Pairing rooms: `{ "room": "RRRR", ... }` frames connect exactly two clients. Rooms expire after 10 minutes or one failed confirmation. Room numbers remain reserved until 15 minutes after creation, then are reclaimed using monotonic time; each endpoint independently enforces its original 10-minute pairing deadline. Busy reservations cause the hub to allocate a different room before displaying a code; a restart invalidates outstanding rooms.
 - Limits: 1 MiB per frame, 60 frames per second and 16 MiB per minute per connection, one connection per machine ID (a new one replaces the old).
-- Logs contain machine IDs and sizes, never payloads.
+- Structured info logs cover startup, authentication, connection/room closure and limits, using the listening address, machine IDs, counts/sizes and fixed reasons/outcomes; never payloads, room secrets or public keys.
 
 ## 12. What the relay and a stolen pairing code can and cannot do
 
 | Attacker | Can | Cannot |
 |---|---|---|
 | Malicious relay | See who talks to whom and when; forge routing metadata; drop, replay or delay frames | Read plaintext or forge authenticated end-to-end messages as a pinned machine |
-| Someone who learns a pairing code later | Nothing; the room is closed | — |
+| Someone who learns a pairing code later | Attempt another room lookup or cause denial of service | Revive an expired pairing attempt or decrypt recorded pairings/channels from the code alone |
 | Someone who guesses during the 10 minutes | One online guess per room (1 in 10^6) | Stay undetected: a failed guess closes the room, and the machine still needs approval |
 | Compromised hub | Send tasks to workers | Exceed each worker's local policy; run arbitrary commands |
 | Compromised worker | Lie about its results | Reach other workers; read other machines' sessions |

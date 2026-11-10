@@ -350,3 +350,14 @@ fn noise_fresh_prologue_rejects_recorded_first_message_and_context_changes() {
     initiator.finish().unwrap();
     responder.finish().unwrap();
 }
+
+#[test]
+fn pairing_rejects_empty_display_names_without_repair() {
+    let mut introduction = info();
+    introduction.display_name.clear();
+    assert!(introduction.validate().is_err());
+    let code = PairCode::parse("1234-567890").unwrap();
+    for role in [PairRole::Hub, PairRole::Worker] {
+        assert!(Pairing::new(role, &code, introduction.clone(), 0).is_err());
+    }
+}

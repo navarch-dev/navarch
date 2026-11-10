@@ -496,10 +496,54 @@ async fn pairing_cli_persists_confirmed_public_pins_through_daemon_and_wires_wor
         "{}",
         String::from_utf8_lossy(&join.stderr)
     );
+    let steps = String::from_utf8_lossy(&join.stderr);
+    for step in [
+        "navarch worker init",
+        "worker-policy.toml",
+        "navarch worker serve",
+    ] {
+        assert!(steps.contains(step));
+    }
     assert!(pair.wait().await.unwrap().success());
     let machines = store.machines().unwrap();
     assert_eq!(machines.len(), 1);
     assert_eq!(machines[0].state, MachineState::Pending);
+    assert!(!machines[0].display_name.is_empty());
+    assert!(!machines[0].display_name.chars().any(char::is_control));
+    assert!(machines[0].display_name.len() <= 200);
+    assert_eq!(
+        machines[0].display_name,
+        rustix::system::uname().nodename().to_str().unwrap()
+    );
+    for json in [false, true] {
+        let mut cmd = tokio::process::Command::new(env!("CARGO_BIN_EXE_navarch"));
+        cmd.env("NAVARCH_HOME", hub_home.path())
+            .args(["hub", "machines"]);
+        if json {
+            cmd.arg("--json");
+        }
+        let listing = cmd.output().await.unwrap();
+        assert!(listing.status.success());
+        let text = String::from_utf8(listing.stdout).unwrap();
+        if json {
+            let value: Value = serde_json::from_str(&text).unwrap();
+            assert_eq!(
+                value[0]["machine"]["display_name"],
+                machines[0].display_name
+            );
+        } else {
+            assert!(text.starts_with("ID "));
+            for field in [
+                "STATE",
+                "ONLINE",
+                "NAME",
+                "pending",
+                &machines[0].display_name,
+            ] {
+                assert!(text.contains(field));
+            }
+        }
+    }
     let worker_identity = Identity::load_or_create(worker_home.path()).unwrap();
     assert_eq!(machines[0].id.to_string(), worker_identity.machine_id());
     assert_eq!(
@@ -541,15 +585,17 @@ async fn pairing_cli_persists_confirmed_public_pins_through_daemon_and_wires_wor
     )
     .unwrap();
     assert!(connector.connect().await.is_err());
-    let response = navarch_hub::control::call(
-        &socket,
-        &Request::ApproveMachine {
-            machine: machines[0].id.clone(),
-        },
-    )
-    .await
-    .unwrap();
-    assert_eq!(response["approved"], true);
+    let approve = tokio::process::Command::new(env!("CARGO_BIN_EXE_navarch"))
+        .env("NAVARCH_HOME", hub_home.path())
+        .args(["hub", "machines", "approve", &machines[0].id.to_string()])
+        .output()
+        .await
+        .unwrap();
+    assert!(approve.status.success());
+    assert_eq!(
+        String::from_utf8(approve.stdout).unwrap(),
+        format!("Approved machine {}.\n", machines[0].id)
+    );
     let identity = Identity::load_or_create(hub_home.path()).unwrap();
     let key = Arc::new(StaticKey::load_or_create(hub_home.path()).unwrap());
     let expected = machines[0].id.clone();
@@ -585,5 +631,9 @@ async fn pairing_cli_persists_confirmed_public_pins_through_daemon_and_wires_wor
         .await
         .unwrap();
     assert!(revoke.status.success());
+    assert_eq!(
+        String::from_utf8(revoke.stdout).unwrap(),
+        format!("Revoked machine {}.\n", machines[0].id)
+    );
     assert_eq!(store.machines().unwrap()[0].state, MachineState::Revoked);
 }

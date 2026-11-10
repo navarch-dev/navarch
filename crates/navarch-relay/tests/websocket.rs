@@ -121,7 +121,7 @@ async fn rooms_exactly_two_ordered_and_failure_tombstones_room() {
         })
         .await
         .unwrap();
-    assert!(matches!(next(&mut third).await, R::RoomClosed));
+    assert!(matches!(next(&mut third).await, R::RoomBusy));
 }
 #[tokio::test]
 async fn room_third_member_and_out_of_order_close_room() {
@@ -271,16 +271,24 @@ impl std::io::Write for Capture {
         Ok(())
     }
 }
-#[tokio::test]
-async fn structured_logs_never_contain_raw_or_base64_payload() {
-    let bytes = Arc::new(Mutex::new(vec![]));
-    let capture = Capture(bytes.clone());
-    let subscriber = tracing_subscriber::fmt()
-        .without_time()
-        .with_ansi(false)
-        .with_writer(move || capture.clone())
-        .finish();
-    tracing::subscriber::set_global_default(subscriber).unwrap();
+fn log_capture() -> Arc<Mutex<Vec<u8>>> {
+    static BYTES: std::sync::OnceLock<Arc<Mutex<Vec<u8>>>> = std::sync::OnceLock::new();
+    BYTES
+        .get_or_init(|| {
+            let bytes = Arc::new(Mutex::new(vec![]));
+            let capture = Capture(bytes.clone());
+            let subscriber = tracing_subscriber::fmt()
+                .without_time()
+                .with_ansi(false)
+                .with_writer(move || capture.clone())
+                .finish();
+            tracing::subscriber::set_global_default(subscriber).unwrap();
+            bytes
+        })
+        .clone()
+}
+async fn logged_lifecycle() -> (String, String) {
+    let bytes = log_capture();
     let s = server().await;
     let (a, mut ca) = client(&s).await;
     let (b, mut cb) = client(&s).await;
@@ -293,12 +301,105 @@ async fn structured_logs_never_contain_raw_or_base64_payload() {
     .await
     .unwrap();
     next(&mut cb).await;
+    // Exercise room lifecycle and pairing bytes under the same capture.
+    ca.send(Q::RoomOpen {
+        room: "7392".into(),
+    })
+    .await
+    .unwrap();
+    assert!(matches!(next(&mut ca).await, R::RoomOpened));
+    cb.send(Q::RoomJoin {
+        room: "7392".into(),
+    })
+    .await
+    .unwrap();
+    next(&mut ca).await;
+    next(&mut cb).await;
+    for step in 1..=6 {
+        let (sender, receiver) = if step % 2 == 1 {
+            (&mut ca, &mut cb)
+        } else {
+            (&mut cb, &mut ca)
+        };
+        sender
+            .send(Q::RoomData {
+                room: "7392".into(),
+                step,
+                payload: payload.clone(),
+            })
+            .await
+            .unwrap();
+        next(receiver).await;
+    }
+    ca.send(Q::RoomOpen {
+        room: "7393".into(),
+    })
+    .await
+    .unwrap();
+    next(&mut ca).await;
+    ca.send(Q::RoomFail {
+        room: "7393".into(),
+    })
+    .await
+    .unwrap();
+    next(&mut ca).await;
+    // Malformed bytes are rejected without including serde diagnostics in logs.
+    ca.send(Q::Route {
+        to: id(&b),
+        payload: format!("{secret}!"),
+    })
+    .await
+    .unwrap();
+    assert!(ca.recv().await.is_err());
+    let (_, mut limited) = client(&s).await;
+    let offline = id(&Identity::generate());
+    let spinner = tokio::spawn(async {
+        loop {
+            tokio::task::yield_now().await;
+        }
+    });
+    tokio::time::pause();
+    for _ in 0..61 {
+        if limited
+            .send(Q::Route {
+                to: offline.clone(),
+                payload: String::new(),
+            })
+            .await
+            .is_err()
+        {
+            break;
+        }
+    }
+    while limited.recv().await.is_ok() {}
+    spinner.abort();
+    tokio::time::resume();
     let logs = String::from_utf8(bytes.lock().unwrap().clone()).unwrap();
-    assert!(logs.contains("relay frame"));
+    assert!(logs.contains("connection_authenticated"));
     assert!(logs.contains(&a.machine_id()));
     assert!(!logs.contains(secret));
     assert!(!logs.contains(&payload));
     assert!(!logs.contains("public_key"));
+    assert!(
+        !logs.contains(
+            &a.public_key()
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect::<String>()
+        )
+    );
+    assert!(!logs.contains("room=7392"));
+    assert!(!logs.contains("room=7393"));
+    (logs, a.machine_id())
+}
+#[tokio::test]
+async fn structured_logs_never_contain_raw_or_base64_payload() {
+    logged_lifecycle().await;
+}
+#[tokio::test]
+async fn expected_info_lifecycle_lines_include_outcomes_and_directional_counts() {
+    let (logs, machine) = logged_lifecycle().await;
+    assert_expected_lifecycle_lines(&logs, &machine);
 }
 #[tokio::test]
 async fn challenge_replay_wrong_signature_unauthenticated_routing_and_health() {
@@ -374,5 +475,44 @@ async fn multiple_senders_cannot_bypass_recipient_byte_budget() {
         } else {
             assert!(receiver.recv().await.is_err());
         }
+    }
+}
+
+fn assert_expected_lifecycle_lines(logs: &str, machine: &str) {
+    for event in [
+        "listening",
+        "connection_authenticated",
+        "connection_closed",
+        "room_opened",
+        "room_closed",
+        "limit_exceeded",
+    ] {
+        assert!(
+            logs.lines()
+                .any(|line| line.contains("INFO") && line.contains(&format!("event=\"{event}\""))),
+            "missing event {event}: {logs}"
+        );
+    }
+    assert!(logs.lines().any(|line| line.contains("event=\"listening\"") && line.contains("address=127.0.0.1:")));
+    let closed = logs
+        .lines()
+        .find(|line| line.contains("event=\"connection_closed\"") && line.contains(machine))
+        .unwrap();
+    for field in [
+        "reason=\"invalid_request\"",
+        "incoming_frames=",
+        "incoming_bytes=",
+        "outgoing_frames=",
+        "outgoing_bytes=",
+    ] {
+        assert!(closed.contains(field), "missing {field}: {closed}");
+    }
+    for outcome in ["completed", "failed"] {
+        assert!(
+            logs.lines()
+                .any(|line| line.contains("event=\"room_closed\"")
+                    && line.contains(machine)
+                    && line.contains(&format!("outcome=\"{outcome}\"")))
+        );
     }
 }

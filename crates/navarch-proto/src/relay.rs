@@ -61,6 +61,8 @@ pub enum RelayResponse {
     Authenticated,
     /// Room reserved, awaiting worker.
     RoomOpened,
+    /// Room number is still reserved; the host may allocate a different code.
+    RoomBusy,
     /// Exactly two authenticated clients have joined.
     RoomReady {
         /// Remote identity.

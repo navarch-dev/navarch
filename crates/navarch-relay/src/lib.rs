@@ -42,6 +42,7 @@ struct Registry {
 struct Relay(Arc<Mutex<Registry>>);
 /// Serve `/v1/ws` and `/healthz` on a caller-bound listener.
 pub async fn serve(listener: tokio::net::TcpListener) -> std::io::Result<()> {
+    tracing::info!(event = "listening", address = %listener.local_addr()?, "relay listening");
     let state = Relay::default();
     axum::serve(
         listener,
@@ -57,26 +58,76 @@ async fn upgrade(State(state): State<Relay>, ws: WebSocketUpgrade) -> axum::resp
         .max_frame_size(MAX_RELAY_FRAME)
         .on_upgrade(move |socket| connection(state, socket))
 }
+#[derive(Clone, Copy)]
+enum CloseReason {
+    Closed,
+    Invalid,
+    Limit,
+    Replaced,
+    Overloaded,
+}
+impl CloseReason {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Closed => "socket_closed",
+            Self::Invalid => "invalid_request",
+            Self::Limit => "limit_exceeded",
+            Self::Replaced => "replaced",
+            Self::Overloaded => "output_closed",
+        }
+    }
+}
+fn limit(direction: &'static str, kind: &'static str) -> CloseReason {
+    tracing::info!(
+        event = "limit_exceeded",
+        direction,
+        limit = kind,
+        "relay limit exceeded"
+    );
+    CloseReason::Limit
+}
 async fn send(
     socket: &mut WebSocket,
     response: RelayResponse,
     limits: &mut Limits,
-) -> Result<(), ()> {
-    let text = serde_json::to_string(&response).map_err(|_| ())?;
+) -> Result<(), CloseReason> {
+    let text = serde_json::to_string(&response).map_err(|_| CloseReason::Invalid)?;
     if !limits.accept(text.len(), Instant::now()) {
-        return Err(());
+        return Err(limit("outgoing", "frame_rate_or_bytes"));
     }
+    let size = text.len();
     socket
         .send(Message::Text(text.into()))
         .await
-        .map_err(|_| ())
+        .map_err(|_| CloseReason::Closed)?;
+    limits.record(size);
+    Ok(())
 }
-async fn request(socket: &mut WebSocket) -> Result<(RelayRequest, usize), ()> {
+async fn request(socket: &mut WebSocket, limits: &mut Limits) -> Result<RelayRequest, CloseReason> {
     match socket.next().await {
-        Some(Ok(Message::Text(text))) if text.len() <= MAX_RELAY_FRAME => {
-            Ok((serde_json::from_str(&text).map_err(|_| ())?, text.len()))
+        Some(Ok(Message::Text(text))) => {
+            limits.record(text.len());
+            if !limits.accept(text.len(), Instant::now()) {
+                return Err(limit("incoming", "frame_rate_or_bytes"));
+            }
+            serde_json::from_str(&text).map_err(|_| CloseReason::Invalid)
         }
-        _ => Err(()),
+        Some(Err(error)) => {
+            // Inspect only the error type, never format errors carrying peer data.
+            let mut source: Option<&(dyn std::error::Error + 'static)> = Some(&error);
+            while let Some(error) = source {
+                if matches!(
+                    error.downcast_ref::<tokio_tungstenite::tungstenite::Error>(),
+                    Some(tokio_tungstenite::tungstenite::Error::Capacity(_))
+                ) {
+                    return Err(limit("incoming", "frame_size"));
+                }
+                source = error.source();
+            }
+            Err(CloseReason::Closed)
+        }
+        Some(Ok(Message::Close(_))) | None => Err(CloseReason::Closed),
+        _ => Err(CloseReason::Invalid),
     }
 }
 async fn connection(state: Relay, mut socket: WebSocket) {
@@ -95,14 +146,13 @@ async fn connection(state: Relay, mut socket: WebSocket) {
     {
         return;
     }
-    let auth = tokio::time::timeout(Duration::from_secs(10), request(&mut socket)).await;
-    let Ok(Ok((
-        RelayRequest::Authenticate {
-            public_key,
-            signature,
-        },
-        auth_size,
-    ))) = auth
+    let mut limits = Limits::default();
+    let auth =
+        tokio::time::timeout(Duration::from_secs(10), request(&mut socket, &mut limits)).await;
+    let Ok(Ok(RelayRequest::Authenticate {
+        public_key,
+        signature,
+    })) = auth
     else {
         return;
     };
@@ -134,51 +184,54 @@ async fn connection(state: Relay, mut socket: WebSocket) {
         }
         token
     };
-    if send(&mut socket, RelayResponse::Authenticated, &mut outgoing)
-        .await
-        .is_err()
-    {
-        state.0.lock().await.disconnect(&id, token);
-        return;
-    }
-    tracing::info!(machine=%id,"relay authenticated");
-    let mut limits = Limits::default();
-    // Authentication is itself a frame and consumes both connection budgets.
-    if !limits.accept(auth_size, Instant::now()) {
-        state.0.lock().await.disconnect(&id, token);
-        return;
-    }
-    loop {
-        let expires = state
-            .0
-            .lock()
-            .await
-            .rooms
-            .values()
-            .filter(|r| !r.closed)
-            .map(|r| r.expires)
-            .min()
-            .unwrap_or_else(|| Instant::now() + Duration::from_secs(600));
-        tokio::select! {
-            _=stopped.changed()=>break,
-            _=tokio::time::sleep_until(expires)=>{state.0.lock().await.expire_rooms();},
-            message=request(&mut socket)=>{
-                let Ok((message,size))=message else {break;};
-                if !limits.accept(size,Instant::now()) {break;}
-                let mut registry=state.0.lock().await;
-                if registry.connections.get(&id).is_none_or(|c| c.token != token) {break;}
-                tracing::info!(machine=%id,size,"relay frame");
-                if !registry.handle(&id,&tx,message) {break;}
-            },
-            output=rx.recv()=>{match output {Some(Some(response))=>{if send(&mut socket,response,&mut outgoing).await.is_err(){break;}},_=>break}},
-        }
-    }
+    tracing::info!(event = "connection_authenticated", machine = %id, "relay authenticated");
+    let reason = match send(&mut socket, RelayResponse::Authenticated, &mut outgoing).await {
+        Err(reason) => reason,
+        Ok(()) => loop {
+            let expires = state
+                .0
+                .lock()
+                .await
+                .rooms
+                .values()
+                .map(|r| if r.closed { r.reusable } else { r.expires })
+                .min()
+                .unwrap_or_else(|| Instant::now() + Duration::from_secs(600));
+            tokio::select! {
+                _ = stopped.changed() => break CloseReason::Replaced,
+                _ = tokio::time::sleep_until(expires) => {
+                    state.0.lock().await.expire_rooms(Instant::now());
+                },
+                message = request(&mut socket, &mut limits) => {
+                    let message = match message { Ok(message) => message, Err(reason) => break reason };
+                    let mut registry = state.0.lock().await;
+                    if registry.connections.get(&id).is_none_or(|c| c.token != token) {
+                        break CloseReason::Replaced;
+                    }
+                    if !registry.handle(&id, &tx, message) { break CloseReason::Invalid; }
+                },
+                output = rx.recv() => match output {
+                    Some(Some(response)) => {
+                        if let Err(reason) = send(&mut socket, response, &mut outgoing).await { break reason; }
+                    },
+                    _ => break CloseReason::Overloaded,
+                },
+            }
+        },
+    };
     let mut registry = state.0.lock().await;
     registry.disconnect(&id, token);
-    tracing::info!(machine=%id,"relay disconnected");
+    tracing::info!(event = "connection_closed", machine = %id, reason = reason.label(),
+        incoming_frames = limits.count_frames, incoming_bytes = limits.count_bytes,
+        outgoing_frames = outgoing.count_frames, outgoing_bytes = outgoing.count_bytes,
+        "relay connection closed");
 }
 fn emit(out: &Output, response: RelayResponse) -> bool {
-    out.try_send(Some(response)).is_ok()
+    if out.try_send(Some(response)).is_err() {
+        limit("outgoing", "queue_capacity");
+        return false;
+    }
+    true
 }
 impl Registry {
     fn disconnect(&mut self, id: &MachineId, token: u64) {
@@ -199,6 +252,7 @@ impl Registry {
                 };
                 // Adding `from` must not turn a legal input into an oversized output.
                 if serde_json::to_vec(&response).map_or(true, |b| b.len() > MAX_RELAY_FRAME) {
+                    limit("outgoing", "frame_size");
                     return false;
                 }
                 if let Some(peer) = self.connections.get(&to) {
@@ -214,17 +268,23 @@ impl Registry {
                 }
             }
             RelayRequest::Authenticate { .. } => false,
-            request => self.room_request(id, out, request),
+            request => self.room_request(id, out, request, Instant::now()),
         }
     }
 }
 #[derive(Default)]
 struct Limits {
+    count_frames: u64,
+    count_bytes: u64,
     frames: VecDeque<Instant>,
     bytes: VecDeque<(Instant, usize)>,
     total: usize,
 }
 impl Limits {
+    fn record(&mut self, size: usize) {
+        self.count_frames += 1;
+        self.count_bytes += size as u64;
+    }
     fn accept(&mut self, size: usize, now: Instant) -> bool {
         while self
             .frames

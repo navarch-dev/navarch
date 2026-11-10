@@ -6,7 +6,7 @@ use navarch_crypto::{Identity, NoiseChannel, NoiseHandshake, StaticKey};
 use navarch_proto::relay::{RelayRequest, RelayResponse};
 use rand::RngCore;
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{HashMap, HashSet, VecDeque},
     sync::Arc,
     time::Duration,
 };
@@ -46,7 +46,7 @@ impl RelayLink {
         remote: &[u8; 32],
         initiator: bool,
     ) -> Result<Self, LinkError> {
-        let channel = tokio::time::timeout(Duration::from_secs(10), async {
+        let channel = tokio::time::timeout(HANDSHAKE_WINDOW, async {
             // A fresh responder nonce prevents replayed KK first messages from
             // creating an authenticated link, even after process restart.
             let mut own = [0; 32];
@@ -64,14 +64,7 @@ impl RelayLink {
             } else {
                 (&io.peer, &io.local)
             };
-            let prologue = [
-                b"navarch-channel-v1\0worker\0hub\0".as_slice(),
-                worker.to_string().as_bytes(),
-                hub.to_string().as_bytes(),
-                &worker_nonce,
-                &hub_nonce,
-            ]
-            .concat();
+            let prologue = prologue(worker, hub, &worker_nonce, &hub_nonce);
             let mut hs = NoiseHandshake::with_prologue(initiator, key, remote, &prologue)
                 .map_err(|_| protocol())?;
             if initiator {
@@ -119,6 +112,21 @@ impl Link for RelayLink {
     fn peer(&self) -> &MachineId {
         &self.peer
     }
+}
+fn prologue(
+    worker: &MachineId,
+    hub: &MachineId,
+    worker_nonce: &[u8; 32],
+    hub_nonce: &[u8; 32],
+) -> Vec<u8> {
+    [
+        b"navarch-channel-v1\0worker\0hub\0".as_slice(),
+        worker.to_string().as_bytes(),
+        hub.to_string().as_bytes(),
+        worker_nonce,
+        hub_nonce,
+    ]
+    .concat()
 }
 fn nonce(frame: &[u8], kind: u8) -> Result<[u8; 32], LinkError> {
     if frame.len() != 33 || frame[0] != kind {
@@ -315,15 +323,52 @@ impl RelayListener {
     }
 }
 
-// Retain handshake replay protection across hub relay reconnects. Bound memory
-// by refusing new handshakes after saturation, never evicting replay history.
+// This cache is an extra short-term replay guard. Fresh two-sided prologues
+// authenticate every handshake independently of cache eviction or process restart.
+const HANDSHAKE_WINDOW: Duration = Duration::from_secs(10);
+const HISTORY_CAP: usize = 65536;
+type NonceKey = (MachineId, [u8; 32]);
+#[derive(Default)]
+struct History {
+    seen: HashSet<NonceKey>,
+    oldest: VecDeque<(tokio::time::Instant, NonceKey)>,
+}
+impl History {
+    fn remember(&mut self, peer: &MachineId, message: &[u8], now: tokio::time::Instant) -> bool {
+        let Ok(nonce) = nonce(message, 3) else {
+            return false;
+        };
+        while self
+            .oldest
+            .front()
+            .is_some_and(|(time, _)| now.duration_since(*time) >= HANDSHAKE_WINDOW)
+        {
+            self.evict_oldest();
+        }
+        let key = (peer.clone(), nonce);
+        if self.seen.contains(&key) {
+            return false;
+        }
+        if self.seen.len() >= HISTORY_CAP {
+            self.evict_oldest();
+        }
+        self.seen.insert(key.clone());
+        self.oldest.push_back((now, key));
+        true
+    }
+    fn evict_oldest(&mut self) {
+        if let Some((_, key)) = self.oldest.pop_front() {
+            self.seen.remove(&key);
+        }
+    }
+}
+// Retain the extra guard across hub relay reconnects without lifetime exhaustion.
 fn remember(peer: &MachineId, message: &[u8]) -> bool {
-    type History = std::sync::Mutex<HashSet<(MachineId, Vec<u8>)>>;
-    static HISTORY: std::sync::OnceLock<History> = std::sync::OnceLock::new();
-    let Ok(mut seen) = HISTORY.get_or_init(History::default).lock() else {
+    static HISTORY: std::sync::OnceLock<std::sync::Mutex<History>> = std::sync::OnceLock::new();
+    let Ok(mut history) = HISTORY.get_or_init(Default::default).lock() else {
         return false;
     };
-    seen.len() < 16384 && seen.insert((peer.clone(), message.to_vec()))
+    history.remember(peer, message, tokio::time::Instant::now())
 }
 
 #[cfg(test)]
@@ -385,8 +430,79 @@ mod tests {
     #[test]
     fn handshake_replays_are_remembered_across_listener_reconnects() {
         let id = Identity::generate().machine_id().parse().unwrap();
-        assert!(remember(&id, b"first"));
-        assert!(!remember(&id, b"first"));
-        assert!(remember(&id, b"fresh"));
+        assert!(remember(&id, &[3; 33]));
+        assert!(!remember(&id, &[3; 33]));
+        assert!(remember(&id, &[vec![3], vec![4; 32]].concat()));
+    }
+    fn request_nonce(n: u64) -> Vec<u8> {
+        let mut frame = vec![3; 33];
+        frame[1..9].copy_from_slice(&n.to_be_bytes());
+        frame
+    }
+    #[test]
+    fn one_hundred_thousand_sequential_handshakes_with_advancing_time() {
+        let id = Identity::generate().machine_id().parse().unwrap();
+        let mut history = History::default();
+        let hub_id = Identity::generate().machine_id().parse().unwrap();
+        let worker_key = StaticKey::generate();
+        let hub_key = StaticKey::generate();
+        let worker_public = worker_key.public_key();
+        let hub_public = hub_key.public_key();
+        let start = tokio::time::Instant::now();
+        for n in 0..100000 {
+            let now = start + Duration::from_millis(n * 10);
+            let frame = request_nonce(n);
+            assert!(history.remember(&id, &frame, now));
+            assert!(!history.remember(&id, &frame, now));
+            assert!(history.seen.len() <= 1000);
+            let mut hub_nonce = [0; 32];
+            rand::rngs::OsRng.fill_bytes(&mut hub_nonce);
+            let context = prologue(&id, &hub_id, &nonce(&frame, 3).unwrap(), &hub_nonce);
+            let mut worker =
+                NoiseHandshake::with_prologue(true, &worker_key, &hub_public, &context).unwrap();
+            let mut hub =
+                NoiseHandshake::with_prologue(false, &hub_key, &worker_public, &context).unwrap();
+            hub.read(&worker.write().unwrap()).unwrap();
+            worker.read(&hub.write().unwrap()).unwrap();
+            let mut worker = worker.finish().unwrap();
+            let mut hub = hub.finish().unwrap();
+            assert_eq!(
+                hub.open(&worker.seal(b"confirmed handshake").unwrap())
+                    .unwrap(),
+                b"confirmed handshake"
+            );
+        }
+        assert_eq!(history.seen.len(), history.oldest.len());
+    }
+    #[test]
+    fn replay_window_and_oldest_first_capacity_eviction() {
+        let id = Identity::generate().machine_id().parse().unwrap();
+        let now = tokio::time::Instant::now();
+        let mut history = History::default();
+        assert!(history.remember(&id, &request_nonce(0), now));
+        assert!(!history.remember(
+            &id,
+            &request_nonce(0),
+            now + HANDSHAKE_WINDOW - Duration::from_nanos(1)
+        ));
+        // Rejected replays do not extend retention.
+        assert!(history.remember(&id, &request_nonce(0), now + HANDSHAKE_WINDOW));
+        let now = now + HANDSHAKE_WINDOW;
+        for n in 1..=HISTORY_CAP as u64 {
+            assert!(history.remember(&id, &request_nonce(n), now));
+        }
+        assert_eq!(history.seen.len(), HISTORY_CAP);
+        assert!(
+            !history
+                .seen
+                .contains(&(id.clone(), nonce(&request_nonce(0), 3).unwrap()))
+        );
+        assert!(!history.remember(&id, &request_nonce(1), now));
+        assert!(history.remember(&id, &request_nonce(0), now));
+        assert!(
+            !history
+                .seen
+                .contains(&(id, nonce(&request_nonce(1), 3).unwrap()))
+        );
     }
 }

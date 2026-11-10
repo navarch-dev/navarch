@@ -327,7 +327,8 @@ fn nonce_bytes(n: u8) -> [u8; 12] {
     b
 }
 fn validate(info: &PairInfo) -> Result<(), CryptoError> {
-    if info.display_name.len() > 200
+    if info.display_name.is_empty()
+        || info.display_name.len() > 200
         || info.display_name.chars().any(char::is_control)
         || !x25519_dalek::StaticSecret::from([0; 32])
             .diffie_hellman(&x25519_dalek::PublicKey::from(info.static_key))

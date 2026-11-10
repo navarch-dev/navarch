@@ -38,6 +38,9 @@ pub enum LinkError {
     /// Peer or owner stopped.
     #[error("link closed")]
     Closed,
+    /// The relay still reserves this room number.
+    #[error("pairing room busy")]
+    RoomBusy,
 }
 /// Bidirectional framed link. `recv` must be cancellation safe.
 #[async_trait]
@@ -56,4 +59,4 @@ pub use relay::{RelayAuthorization, RelayConnector, RelayLink, RelayListener};
 pub use relay_socket::RelaySocket;
 
 mod pairing;
-pub use pairing::{open_pair_room, pair_room};
+pub use pairing::{open_pair_room, pair_room, reserve_pair_room};

@@ -72,11 +72,16 @@ async fn remote(command: Command) -> anyhow::Result<u8> {
 
 #[tokio::main]
 async fn main() -> ExitCode {
+    let cli = Cli::parse();
+    let level = if matches!(cli.command, Command::Relay { .. }) {
+        tracing::Level::INFO
+    } else {
+        tracing::Level::WARN
+    };
     tracing_subscriber::fmt()
         .with_writer(std::io::stderr)
-        .with_max_level(tracing::Level::WARN)
+        .with_max_level(level)
         .init();
-    let cli = Cli::parse();
     match cli.command {
         Command::Hub { command } => match navarch_cli::hub::run(command).await {
             Ok(code) => ExitCode::from(code),

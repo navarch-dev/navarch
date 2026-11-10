@@ -218,3 +218,34 @@ share a writer lock within the process.
 
 See [M2 boundary decisions](notes/m2-deviations.md) for transport and layering
 decisions.
+
+## Remote machines (M3)
+
+Pairing, approval and encrypted relay operation are described in
+[relay.md](relay.md). The hub daemon must be running for pairing and approval.
+Inspect and manage machines with:
+
+```sh
+navarch hub machines
+navarch hub machines --json
+navarch hub machines approve MACHINE_ID
+navarch hub machines revoke MACHINE_ID
+```
+
+The default list is a readable table with ID, state, online status and name.
+`--json` returns the structured worker list, including stored public pins and
+capabilities. Successful approval prints `Approved machine MACHINE_ID.`;
+revocation prints `Revoked machine MACHINE_ID.`. Both use the daemon control API.
+
+The hub allocates another room on an explicit busy response before displaying
+a pairing code. Rooms are reserved for fifteen minutes from creation, while
+endpoint pairing state machines enforce ten-minute code deadlines. Failed
+pairing attempts are never retried with the same code. With no `worker.toml`,
+`navarch join` uses a bounded, control-free OS hostname as the worker name;
+empty or invalid introductions are rejected. After joining, run `navarch worker
+init`, edit `worker.toml` and `worker-policy.toml`, and run `navarch worker serve`.
+
+Freshness-request replay history lasts for the ten-second handshake deadline,
+with a 65536-entry oldest-first secondary cap. Fresh two-sided Noise prologues
+keep recorded handshakes invalid even after history eviction or hub restart;
+network reconnections do not consume a lifetime handshake allowance.

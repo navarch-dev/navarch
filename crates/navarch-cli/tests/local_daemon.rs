@@ -152,9 +152,9 @@ async fn local_worker_reconnects_and_hub_cli_reads_real_control_socket() {
         "two"
     );
     for (args, json, header) in [
-        (vec!["hub", "status", "--json"], true, "MACHINE"),
+        (vec!["hub", "status", "--json"], true, "ID"),
         (vec!["hub", "tasks", "--all", "--json"], true, "CARD"),
-        (vec!["hub", "status"], false, "MACHINE"),
+        (vec!["hub", "status"], false, "ID"),
         (vec!["hub", "tasks", "--all"], false, "CARD"),
     ] {
         let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_navarch"))

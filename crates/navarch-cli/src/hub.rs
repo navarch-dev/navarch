@@ -30,6 +30,9 @@ pub enum HubCommand {
     },
     /// List machines or change approval state.
     Machines {
+        /// Emit the machine list as JSON.
+        #[arg(long)]
+        json: bool,
         /// Optional approval action.
         #[command(subcommand)]
         action: Option<MachineAction>,
@@ -76,17 +79,32 @@ pub async fn run(command: HubCommand) -> Result<u8> {
                 .transpose()?;
             tokio::select! { result = navarch_hub::serve_with_relay(&home,hello,store,remote) => result?, result = tokio::signal::ctrl_c() => result? }
         }
-        HubCommand::Machines { action } => {
-            let request = match action {
-                None => Request::ListWorkers,
-                Some(MachineAction::Approve { id }) => Request::ApproveMachine { machine: id },
-                Some(MachineAction::Revoke { id }) => Request::RevokeMachine { machine: id },
-            };
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&control::call(&socket, &request).await?)?
-            );
-        }
+        HubCommand::Machines { action, json } => match action {
+            None => {
+                let value = control::call(&socket, &Request::ListWorkers).await?;
+                println!("{}", render(&value, json, false)?);
+            }
+            Some(MachineAction::Approve { id }) => {
+                control::call(
+                    &socket,
+                    &Request::ApproveMachine {
+                        machine: id.clone(),
+                    },
+                )
+                .await?;
+                println!("Approved machine {id}.");
+            }
+            Some(MachineAction::Revoke { id }) => {
+                control::call(
+                    &socket,
+                    &Request::RevokeMachine {
+                        machine: id.clone(),
+                    },
+                )
+                .await?;
+                println!("Revoked machine {id}.");
+            }
+        },
         HubCommand::Mcp => navarch_hub::serve_mcp(&socket).await?,
         HubCommand::Status { json } => {
             let value = control::call(&socket, &Request::ListWorkers).await?;
@@ -114,7 +132,7 @@ fn render(value: &serde_json::Value, json: bool, tasks: bool) -> Result<String> 
         if tasks {
             vec!["CARD", "STATE", "STEPS", "TITLE"]
         } else {
-            vec!["MACHINE", "STATE", "ONLINE", "NAME"]
+            vec!["ID", "STATE", "ONLINE", "NAME"]
         }
         .into_iter()
         .map(str::to_owned)

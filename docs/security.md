@@ -12,7 +12,7 @@ Ed25519 public key.
 | Attacker | Can | Cannot |
 |---|---|---|
 | Malicious relay | Observe machine IDs, rooms, sizes, timing and public SPAKE2 messages; fabricate routing metadata; disconnect, reorder, replay, delay or drop traffic; deny service | Decrypt pairing introductions or channel traffic, forge confirmed pairings without the password, or complete authenticated Noise as a pinned peer without its static secret |
-| Someone learning an old pairing code | Attempt another room lookup or cause denial of service | Reopen a tombstoned room or decrypt recorded pairings/channels from the password alone |
+| Someone learning an old pairing code | Attempt another room lookup or cause denial of service | Revive an expired pairing attempt or decrypt recorded pairings/channels from the password alone |
 | Someone guessing a live code | Make one online guess per honest relay room (six-digit secret, probability 1 in 1000000), close the room on failure | Make offline password guesses against SPAKE2 or gain active worker privileges without approval |
 | Compromised hub | Send tasks and answer escalations within the worker's configured policy | Bypass worker root/agent allowlists or execute arbitrary commands through a separate hub execution API |
 | Compromised worker | Lie about its work and own capability reports; flood the relay within enforced budgets | Change another worker's cards, impersonate its keys, or reach its sessions through the hub |
@@ -59,6 +59,19 @@ Malformed, truncated, replayed, reflected, out-of-order, expired or tampered
 pairing messages permanently invalidate the attempt. Each transition checks the
 original ten-minute monotonic deadline; the relay also expires the original room.
 The code text carries no timestamp, so parsing alone cannot determine expiry.
+An honest relay keeps a closed room tombstoned until fifteen minutes after its
+original creation, then reclaims the four-digit routing number using monotonic
+time. Closure never resets that deadline. This exceeds each endpoint's original
+ten-minute pairing deadline, so number reuse cannot revive an expired state
+machine. Restart loses room state and invalidates outstanding attempts. A busy
+reservation causes the hub to allocate a different room before displaying a
+code; no failed pairing attempt is repaired or retried.
+
+Introductions require a nonempty display name of at most 200 UTF-8 bytes without
+control characters. Invalid received or configured names are rejected before
+confirmation/persistence. Only when `worker.toml` is absent, `join` constructs a
+local default from the OS hostname, stripping controls and truncating on a UTF-8
+character boundary; an empty result is an error.
 
 # Channels, storage and revocation
 
@@ -75,11 +88,17 @@ Rekey behavior is left to snow's defaults. Application records are ordered;
 a failed tag, malformed header, gap, overlap, replay or unexpected record type
 closes the channel. The hub rejects unknown/pending/revoked sources before Noise
 processing and checks approval again before passing any frame, including an ack,
-to reliable delivery. The responder keeps a bounded, non-evicting process-wide
-freshness-request replay history (16384 worker nonce requests); exhaustion refuses
-fresh handshakes until a process restart. After process restart a replayed nonce
-request can only solicit a fresh challenge;
-a recorded first KK message fails verification under the new prologue.
+to reliable delivery. The responder retains a process-wide freshness-request
+replay history for the ten-second handshake deadline window, using monotonic
+time across relay reconnects. Older entries are evicted. A secondary generous
+cap of 65536 requests evicts oldest-first instead of refusing fresh handshakes;
+it may shorten retention under extreme load. Replays of retained nonces are
+rejected and do not refresh their timestamps. This cache is an additional request
+filter: authentication depends on the fresh two-sided Noise prologue, not a
+permanent nonce set. After time/cap eviction or restart, a replayed nonce request
+can only solicit a fresh hub challenge; a recorded first KK message fails under
+the new prologue. Eviction therefore removes lifetime denial of service without
+changing the cryptographic protocol or accepting a recorded handshake.
 
 Operating-system randomness supplies identities, static keys, SPAKE2 randomness,
 Noise ephemeral keys, challenges, codes and reconnect jitter. Secret file creation
@@ -105,8 +124,15 @@ Protect backups as carefully as live homes. Public-key pin replacement and key
 rotation are intentionally outside M3.
 
 Logs must not contain pairing secrets, keys, plaintext payloads, or opaque relay
-payloads. Relay records use only machine IDs, sizes and fixed event names; remote
-protocol failures use generic errors. Pairing-code display is intentional CLI
+payloads. The relay logs one structured info line for startup (listening address),
+authentication (machine ID), connection close (machine ID, fixed reason and
+incoming/outgoing application frame/UTF-8 JSON byte totals), room open and close
+(host machine ID and fixed outcome), and limit violations (direction/type).
+Incoming totals include rejected text messages; outgoing totals count successful
+writes. They include authentication/control and exclude WebSocket/TCP overhead.
+The relay CLI enables info by default. Room numbers, challenges, signatures and
+public keys are omitted; machine IDs are the only key-derived log identifiers.
+Remote protocol failures use generic errors. Pairing-code display is intentional CLI
 output, not a tracing event. Avoid capturing that terminal output in shared logs.
 The limitations and ordering/record choices are recorded in
 [the M3 security notes](notes/m3-open-questions.md).

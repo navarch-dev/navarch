@@ -98,3 +98,27 @@ fn long_navarch_home_reports_socket_path_limit_and_remedy_once() {
     );
     assert!(!error.contains("SUN_LEN"));
 }
+
+#[tokio::test]
+async fn relay_logs_listening_at_info_by_default() {
+    use std::process::Stdio;
+    use tokio::io::{AsyncBufReadExt, BufReader};
+    let mut relay = tokio::process::Command::new(env!("CARGO_BIN_EXE_navarch"))
+        .args(["relay", "serve", "--listen", "127.0.0.1:0"])
+        .stderr(Stdio::piped())
+        .stdout(Stdio::null())
+        .kill_on_drop(true)
+        .spawn()
+        .unwrap();
+    let mut lines = BufReader::new(relay.stderr.take().unwrap()).lines();
+    let line = tokio::time::timeout(std::time::Duration::from_secs(5), lines.next_line())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert!(line.contains("INFO"), "{line}");
+    assert!(line.contains("listening"), "{line}");
+    assert!(line.contains("127.0.0.1:"), "{line}");
+    relay.kill().await.unwrap();
+    relay.wait().await.unwrap();
+}
