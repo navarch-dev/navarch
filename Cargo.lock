@@ -505,6 +505,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "configparser"
+version = "3.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "031ad3d167622974ed636505ae4556267ed4aa2aea0464122fa6bc9698a32825"
+
+[[package]]
 name = "const-oid"
 version = "0.9.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1113,6 +1119,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b9e0384b61958566e926dc50660321d12159025e767c18e043daf26b70104c39"
 
 [[package]]
+name = "if-addrs"
+version = "0.15.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c0a05c691e1fae256cf7013d99dad472dc52d5543322761f83ec8d47eab40d2b"
+dependencies = [
+ "libc",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "indexmap"
 version = "1.9.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1274,7 +1290,7 @@ dependencies = [
 
 [[package]]
 name = "navarch-acp"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "agent-client-protocol",
  "async-trait",
@@ -1289,12 +1305,13 @@ dependencies = [
 
 [[package]]
 name = "navarch-cli"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
  "base64 0.22.1",
  "clap",
+ "configparser",
  "navarch-acp",
  "navarch-crypto",
  "navarch-hub",
@@ -1304,6 +1321,7 @@ dependencies = [
  "navarch-store",
  "navarch-transport",
  "navarch-worker",
+ "plist",
  "rustix",
  "serde",
  "serde_json",
@@ -1318,7 +1336,7 @@ dependencies = [
 
 [[package]]
 name = "navarch-crypto"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "blake2",
  "chacha20poly1305",
@@ -1338,10 +1356,11 @@ dependencies = [
 
 [[package]]
 name = "navarch-hub"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "async-trait",
  "bytes",
+ "if-addrs",
  "navarch-crypto",
  "navarch-proto",
  "navarch-store",
@@ -1358,7 +1377,7 @@ dependencies = [
 
 [[package]]
 name = "navarch-policy"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "navarch-proto",
  "serde",
@@ -1369,7 +1388,7 @@ dependencies = [
 
 [[package]]
 name = "navarch-proto"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "chrono",
  "data-encoding",
@@ -1381,7 +1400,7 @@ dependencies = [
 
 [[package]]
 name = "navarch-relay"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "axum",
  "base64 0.22.1",
@@ -1399,7 +1418,7 @@ dependencies = [
 
 [[package]]
 name = "navarch-store"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "navarch-proto",
  "serde",
@@ -1412,7 +1431,7 @@ dependencies = [
 
 [[package]]
 name = "navarch-transport"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -1434,7 +1453,7 @@ dependencies = [
 
 [[package]]
 name = "navarch-worker"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "async-trait",
  "navarch-acp",
@@ -1550,6 +1569,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "plist"
+version = "1.10.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "327a4cb2ad49dc48adfdc9da89e22c64d488b508c67a044d71ba729e4521a285"
+dependencies = [
+ "base64 0.23.1",
+ "indexmap 2.14.2",
+ "quick-xml",
+ "serde",
+ "time",
+]
+
+[[package]]
 name = "polling"
 version = "3.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1623,6 +1655,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "985e7ec9bb745e6ce6535b544d84d6cd6f7ad8bd711c398938ae983b91a766d9"
 dependencies = [
  "unicode-ident",
+]
+
+[[package]]
+name = "quick-xml"
+version = "0.42.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "41b1177fdf999d2321d3fb46ff47159d9c1fb9ad66a4879f8c50a0b504615e9b"
+dependencies = [
+ "memchr",
 ]
 
 [[package]]

@@ -27,14 +27,29 @@ pub enum ReliableEvent {
 }
 /// Outbound reliable message queue, retained across link replacements.
 #[derive(Clone)]
-pub struct ReliableHandle(mpsc::UnboundedSender<Body>);
+pub struct ReliableHandle(
+    mpsc::UnboundedSender<Body>,
+    std::sync::Arc<std::sync::atomic::AtomicU8>,
+);
 impl ReliableHandle {
+    /// Current connection route, retained while disconnected.
+    pub fn connection_kind(&self) -> &'static str {
+        match self.1.load(std::sync::atomic::Ordering::Relaxed) {
+            1 => "relay",
+            2 => "direct",
+            _ => "local",
+        }
+    }
     /// Validate the encoded envelope before any caller persists a task or queues it.
     pub fn validate(&self, body: &Body) -> Result<(), LinkError> {
         if matches!(body, Body::Ack { .. }) {
             return Err(LinkError::Protocol(
                 "acks are managed by reliable delivery".into(),
             ));
+        }
+        if let Body::HubEndpoints { direct } = body {
+            navarch_proto::validate_direct_endpoints(direct)
+                .map_err(|e| LinkError::Protocol(e.into()))?;
         }
         let size = navarch_proto::encoded_envelope_len(body)
             .map_err(|e| LinkError::Protocol(e.to_string()))?;
@@ -75,14 +90,16 @@ pub fn reliable(
 ) {
     let (tx, rx) = mpsc::unbounded_channel();
     let (events, incoming) = mpsc::unbounded_channel();
+    let kind = std::sync::Arc::new(std::sync::atomic::AtomicU8::new(0));
     let task = tokio::spawn(run(
         local,
         ReconnectingLink::new(connector),
         rx,
         events,
         dedup_capacity.max(1),
+        kind.clone(),
     ));
-    (ReliableHandle(tx), incoming, ReliableTask(task))
+    (ReliableHandle(tx, kind), incoming, ReliableTask(task))
 }
 async fn send(link: &mut dyn Link, envelope: &Envelope) -> Result<(), LinkError> {
     link.send(Bytes::from(
@@ -96,7 +113,9 @@ async fn run(
     mut output: mpsc::UnboundedReceiver<Body>,
     events: mpsc::UnboundedSender<ReliableEvent>,
     capacity: usize,
+    kind: std::sync::Arc<std::sync::atomic::AtomicU8>,
 ) -> Result<(), LinkError> {
+    let endpoints = reconnect.endpoint_state();
     let mut pending: VecDeque<Envelope> = VecDeque::new();
     let mut seen = HashSet::new();
     let mut order = VecDeque::new();
@@ -104,6 +123,14 @@ async fn run(
     loop {
         let mut link = tokio::select! { link = reconnect.connect() => link, () = events.closed() => return Ok(()) };
         let peer = link.peer().clone();
+        kind.store(
+            match link.kind() {
+                "relay" => 1,
+                "direct" => 2,
+                _ => 0,
+            },
+            std::sync::atomic::Ordering::Relaxed,
+        );
         if expected_peer.as_ref().is_some_and(|p| p != &peer) {
             return Err(LinkError::Protocol(
                 "reconnected to a different machine".into(),
@@ -123,6 +150,7 @@ async fn run(
             &mut seen,
             &mut order,
             capacity,
+            endpoints.as_ref(),
         )
         .await;
         if events.send(ReliableEvent::Disconnected(peer)).is_err() {
@@ -148,6 +176,7 @@ async fn connected(
     seen: &mut HashSet<Uuid>,
     order: &mut VecDeque<Uuid>,
     capacity: usize,
+    endpoints: Option<&EndpointState>,
 ) -> Result<(), LinkError> {
     resend(link, pending).await?;
     let mut retry = tokio::time::interval(std::time::Duration::from_secs(1));
@@ -178,6 +207,10 @@ async fn connected(
                 envelope.check_version().map_err(|e| LinkError::Protocol(e.to_string()))?;
                 if envelope.from != *peer || envelope.to != *local { return Err(LinkError::Protocol("envelope address does not match link".into())); }
                 if let Body::Ack { of } = envelope.body { pending.retain(|e| e.id != of); continue; }
+                if let Body::HubEndpoints { direct } = &envelope.body {
+                    navarch_proto::validate_direct_endpoints(direct).map_err(|e|LinkError::Protocol(e.into()))?;
+                    if let Some(endpoints) = endpoints { endpoints.update(direct.clone())?; }
+                }
                 let id = envelope.id;
                 if !seen.contains(&id) {
                     let (tx, rx) = oneshot::channel();

@@ -10,11 +10,36 @@ Navarch 让一个总控会话把工作派给你任意一台机器上的编码 Ag
 
 ## 当前状态
 
-**尚未发布正式版本。已在作者自己的机器上端到端跑通，但没有打包发布，也没有经过安全审计。**
+**0.1.0 开发版本。接口和文件格式仍可能调整，加密设计尚未经过独立安全审计。**
 
-目前已有：同一个程序里的 Hub、Worker 和中继；一次性配对码配对；端到端加密通道；每台 Worker 的本地权限策略；通过 MCP 提供给总控的 Hub 工具。使用方法见 [docs/](docs/)：[Worker](docs/worker.md)、[Hub](docs/hub.md)、[中继](docs/relay.md)、[安全](docs/security.md)、[设计](docs/DESIGN.md)（文档为英文）。
+目前已有：同一个程序里的 Hub、Worker 和中继；一次性配对码配对；加密中继与可选直连；每台 Worker 的本地权限策略；通过 MCP 提供的 Hub 工具与完成事件；发布打包和用户级服务安装工具。使用方法见 [docs/](docs/)：[Worker](docs/worker.md)、[Hub](docs/hub.md)、[中继](docs/relay.md)、[安全](docs/security.md)、[设计](docs/DESIGN.md)（文档为英文）。
 
-从源码构建：`cargo build --release -p navarch-cli`。接口和文件格式仍可能调整。
+发布包、源码构建、服务、升级与卸载方法见[安装说明](docs/install.md)。
+
+## 快速开始
+
+从源码构建，或按[安装说明](docs/install.md)使用已发布的安装包：
+
+```sh
+cargo build --locked --release -p navarch-cli
+mkdir -p "$HOME/.local/bin"
+cp target/release/navarch "$HOME/.local/bin/navarch"
+export PATH="$HOME/.local/bin:$PATH"
+navarch --version
+navarch hub init
+navarch worker init
+# 在 ~/.navarch/worker*.toml 中配置已安装的 ACP 适配器和允许访问的目录。
+navarch hub serve
+# 在另一终端中：
+navarch worker serve
+# 在另一终端中：
+navarch hub status
+claude mcp add --transport stdio navarch -- navarch hub mcp
+```
+
+通过 [Hub 设置](docs/hub.md)启用完成通知频道、`wait_for_events` 或
+`navarch hub watch`。需要后台运行时，先用
+`navarch service install hub --dry-run` 预览，再安装 Hub 与 Worker 服务。
 
 ## 解决什么问题
 
@@ -61,7 +86,7 @@ Navarch 让一个总控会话把工作派给你任意一台机器上的编码 Ag
 3. **按强项派活。** 哪类任务交给哪个 Agent，是一张可以改的表。
 4. **交接靠文件，不靠对话。** 每个任务一张任务卡，每一步留一份简短结果。任何会话丢了，工作都能接着做。
 5. **关键的事由你决定。** 合并、上线、花钱、删除，都等你确认。
-6. **只往外连。** 任何机器都不需要公网地址，也不需要开端口。
+6. **默认只往外连。** 中继连接无需入站端口；只有明确配置直连时，Hub 才开启监听端口。
 
 ## 关键选型
 
@@ -88,9 +113,10 @@ Navarch 的本质是让另一台机器替你执行工作，请按这个性质对
 - [x] 单机：Hub 加一个本机 Worker，通过 ACP 驱动 Agent
 - [x] 中继、配对与端到端加密
 - [x] 提供给总控的 Hub 工具
-- [ ] 任务完成时主动通知总控
-- [ ] 同一局域网内直连
-- [ ] 打包、安装脚本、独立的安全评审
+- [x] 任务完成时主动通知总控
+- [x] 同一局域网内直连
+- [x] 打包、安装脚本、用户级服务
+- [ ] 独立的安全评审
 
 ## 不做什么
 

@@ -1,8 +1,15 @@
 //! Local and encrypted relay links with shared reliable envelope delivery.
 #![forbid(unsafe_code)]
+mod channel;
+mod direct;
 mod local;
+mod preferred;
+pub use direct::{DirectConnector, DirectLink, DirectListener};
+pub use preferred::{EndpointState, PreferredConnector};
 mod memory;
 mod reconnect;
+mod replacement;
+pub use replacement::{ReplacementConnector, ReplacementSender, replacement_channel};
 mod reliable;
 mod socket;
 use async_trait::async_trait;
@@ -51,6 +58,10 @@ pub trait Link: Send {
     async fn recv(&mut self) -> Result<Bytes, LinkError>;
     /// Address of the connected peer.
     fn peer(&self) -> &MachineId;
+    /// Connection route used for status reporting.
+    fn kind(&self) -> &'static str {
+        "local"
+    }
 }
 
 mod relay;

@@ -106,6 +106,7 @@ async fn pair_approve_dispatch_send_cancel_disconnect_mid_turn_and_exactly_once_
     let config = Config {
         display_name: "fake".into(),
         local_hub_socket: None,
+        direct: true,
         agents: vec![AgentConfig {
             name: "fake".into(),
             command: std::env::current_exe().unwrap(),
@@ -244,10 +245,10 @@ async fn pair_approve_dispatch_send_cancel_disconnect_mid_turn_and_exactly_once_
     let card = store.task(last_card).unwrap().unwrap();
     assert_eq!(card.steps[0].result_summary, "survived disconnect");
     let inbox = store.inbox(false).unwrap();
-    let finished:Vec<_>=inbox.iter().filter(|e|matches!(&e.envelope.body,Body::Finished{task_id,..} if task_id.to_string()==last["task_id"].as_str().unwrap())).collect();
+    let finished:Vec<_>=inbox.iter().filter(|e|matches!(e.envelope.as_ref().map(|e| &e.body),Some(Body::Finished{task_id,..}) if task_id.to_string()==last["task_id"].as_str().unwrap())).collect();
     assert_eq!(finished.len(), 1);
     let count = inbox.len();
-    hub.apply(&finished[0].envelope).unwrap();
+    hub.apply(finished[0].envelope.as_ref().unwrap()).unwrap();
     assert_eq!(store.inbox(false).unwrap().len(), count);
     hub.request(Request::RevokeMachine {
         machine: worker_id.clone(),
@@ -257,7 +258,7 @@ async fn pair_approve_dispatch_send_cancel_disconnect_mid_turn_and_exactly_once_
         hub.request(Request::ApproveMachine { machine: worker_id })
             .is_err()
     );
-    assert!(hub.apply(&finished[0].envelope).is_err());
+    assert!(hub.apply(finished[0].envelope.as_ref().unwrap()).is_err());
 }
 #[tokio::test]
 async fn wrong_secret_closes_room_for_correct_code_too() {

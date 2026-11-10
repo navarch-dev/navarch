@@ -9,7 +9,7 @@ use clap::{Parser, Subcommand};
 #[derive(Parser)]
 #[command(
     name = "navarch",
-    version,
+    version = env!("NAVARCH_BUILD_VERSION"),
     about = "Coordinate coding agents across machines"
 )]
 struct Cli {
@@ -19,6 +19,11 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Manage a per-user background service.
+    Service {
+        #[command(subcommand)]
+        command: navarch_cli::service::ServiceCommand,
+    },
     /// Run the hub.
     Hub {
         #[command(subcommand)]
@@ -57,6 +62,7 @@ enum RelayCommand {
 }
 async fn remote(command: Command) -> anyhow::Result<u8> {
     match command {
+        Command::Service { command } => navarch_cli::service::run(command),
         Command::Pair { relay } => navarch_cli::remote::pair(relay).await,
         Command::Join { code, relay } => navarch_cli::remote::join(code, relay).await,
         Command::Relay {

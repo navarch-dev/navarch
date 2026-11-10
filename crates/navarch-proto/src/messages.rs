@@ -152,6 +152,11 @@ impl Envelope {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Body {
+    /// Authenticated hub TCP endpoints, at most eight strings of 64 bytes each.
+    HubEndpoints {
+        /// Socket addresses learned only through a paired channel.
+        direct: Vec<String>,
+    },
     /// Start a session.
     Dispatch {
         /// Task identifier.
@@ -303,4 +308,16 @@ pub struct WorkerSession {
     pub updated_at: Option<String>,
     /// Whether Navarch originally created this session.
     pub navarch_started: bool,
+}
+
+/// Validate the bounded direct endpoint announcement without network I/O.
+pub fn validate_direct_endpoints(addresses: &[String]) -> Result<(), &'static str> {
+    if addresses.len() > 8
+        || addresses
+            .iter()
+            .any(|s| s.len() > 64 || s.parse::<std::net::SocketAddr>().is_err())
+    {
+        return Err("direct endpoints require at most eight socket addresses of at most 64 bytes");
+    }
+    Ok(())
 }

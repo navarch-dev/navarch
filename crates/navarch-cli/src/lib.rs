@@ -13,3 +13,6 @@ mod terminal;
 
 /// Remote pairing and relay configuration.
 pub mod remote;
+
+/// Per-user service generation and startup wiring.
+pub mod service;

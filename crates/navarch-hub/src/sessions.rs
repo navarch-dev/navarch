@@ -8,6 +8,12 @@ impl Hub {
     /// Execute control operations, querying workers asynchronously for session lists.
     pub async fn request_async(&self, request: Request) -> Result<Value, HubError> {
         match request {
+            Request::WaitForEvents {
+                timeout_secs,
+                after_seq,
+            } => Ok(serde_json::to_value(
+                self.wait_for_events(timeout_secs, after_seq).await?,
+            )?),
             Request::ListSessions {
                 machine,
                 agent,

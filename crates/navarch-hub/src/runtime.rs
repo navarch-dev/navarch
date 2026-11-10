@@ -17,6 +17,7 @@ type SessionReply = tokio::sync::oneshot::Sender<(Vec<WorkerSession>, bool)>;
 
 pub(crate) struct State {
     pub online: HashMap<MachineId, Connection>,
+    pub links: HashMap<MachineId, navarch_transport::ReplacementSender>,
     pub session_queries: HashMap<Uuid, (MachineId, SessionReply)>,
 }
 /// Shared hub state; workers interact only through protocol envelopes.
@@ -24,14 +25,19 @@ pub(crate) struct State {
 pub struct Hub {
     pub(crate) store: Arc<dyn Store>,
     pub(crate) state: Arc<Mutex<State>>,
+    pub(crate) endpoints: Arc<Mutex<Vec<String>>>,
+    pub(crate) events: tokio::sync::broadcast::Sender<navarch_store::HubEvent>,
 }
 impl Hub {
     /// Open runtime state over a file or in-memory store.
     pub fn new(store: Arc<dyn Store>) -> Self {
         Self {
             store,
+            endpoints: Default::default(),
+            events: tokio::sync::broadcast::channel(256).0,
             state: Arc::new(Mutex::new(State {
                 online: HashMap::new(),
+                links: HashMap::new(),
                 session_queries: HashMap::new(),
             })),
         }
@@ -66,9 +72,11 @@ impl Hub {
     /// Attach a reliable connection, returning a token guarding later detach.
     pub fn attach(&self, machine: MachineId, sender: ReliableHandle) -> Result<Uuid, HubError> {
         let token = Uuid::new_v4();
-        self.state()?
+        let mut state = self.state()?;
+        state
             .online
-            .insert(machine, Connection { token, sender });
+            .insert(machine.clone(), Connection { token, sender });
+        self.lifecycle(&machine, "worker_online")?;
         Ok(token)
     }
     /// Mark offline only if this is still the current connection.
@@ -76,6 +84,7 @@ impl Hub {
         let mut state = self.state()?;
         if state.online.get(machine).is_some_and(|c| c.token == token) {
             state.online.remove(machine);
+            self.lifecycle(machine, "worker_offline")?;
         }
         Ok(())
     }

@@ -184,9 +184,61 @@ pub struct Index {
     #[serde(default)]
     pub corrupt: Vec<String>,
 }
-/// Unread worker event.
+/// Bounded hint published by the hub; inbox and cards remain authoritative.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HubEvent {
+    /// Durable monotonic sequence, including lifecycle events.
+    pub seq: u64,
+    /// Event category.
+    pub kind: String,
+    /// Owning card, absent for machine events.
+    pub card_id: Option<CardId>,
+    /// Wire turn, absent for machine events.
+    pub step: Option<TaskId>,
+    /// Machine that produced the event.
+    pub machine: MachineId,
+    /// At most 200 Unicode characters.
+    pub summary: String,
+    /// Unix milliseconds.
+    pub time: u64,
+}
+/// Durable unread event, with the original envelope when produced by a worker.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InboxEvent {
-    /// Original envelope, with a stable event ID.
-    pub envelope: Envelope,
+    /// Stable idempotency key.
+    pub id: uuid::Uuid,
+    /// Original worker event; machine events have no envelope.
+    pub envelope: Option<Envelope>,
+    /// The original envelope is retained in storage but omitted from this read
+    /// view because its enclosing inbox entry would exceed the control limit.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub envelope_omitted: bool,
+    /// Bounded public event fields, including its durable sequence.
+    #[serde(flatten)]
+    pub event: HubEvent,
+}
+impl InboxEvent {
+    /// Construct a worker event before the store allocates its sequence.
+    pub fn worker(
+        envelope: Envelope,
+        card_id: Option<CardId>,
+        kind: &str,
+        summary: &str,
+        time: u64,
+    ) -> Self {
+        Self {
+            id: envelope.id,
+            event: HubEvent {
+                seq: 0,
+                kind: kind.into(),
+                card_id,
+                step: envelope.body.worker_task_id(),
+                machine: envelope.from.clone(),
+                summary: navarch_proto::short_summary(summary),
+                time,
+            },
+            envelope: Some(envelope),
+            envelope_omitted: false,
+        }
+    }
 }

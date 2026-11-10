@@ -48,17 +48,32 @@ fn outside_allowed_roots_prints_error_once() {
 }
 #[test]
 fn hub_commands_parse_and_missing_daemon_is_clear() {
-    for command in ["serve", "mcp", "status", "tasks", "init"] {
+    let commands: &[&[&str]] = &[
+        &["serve", "--help"],
+        &["mcp", "--help"],
+        &["mcp", "--channel", "--help"],
+        &["watch", "--help"],
+        &["watch", "--json", "--help"],
+        &["status", "--help"],
+        &["tasks", "--help"],
+        &["init", "--help"],
+    ];
+    for arguments in commands {
         let result = std::process::Command::new(env!("CARGO_BIN_EXE_navarch"))
-            .args(["hub", command, "--help"])
+            .arg("hub")
+            .args(*arguments)
             .output()
             .unwrap();
-        assert!(result.status.success());
+        assert!(
+            result.status.success(),
+            "{arguments:?}: {}",
+            String::from_utf8_lossy(&result.stderr)
+        );
     }
     let temp = tempfile::tempdir().unwrap();
     let result = std::process::Command::new(env!("CARGO_BIN_EXE_navarch"))
         .env("NAVARCH_HOME", temp.path())
-        .args(["hub", "mcp"])
+        .args(["hub", "status"])
         .output()
         .unwrap();
     assert_eq!(result.status.code(), Some(1));

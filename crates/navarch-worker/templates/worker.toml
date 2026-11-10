@@ -1,3 +1,6 @@
+# Prefer authenticated direct TCP links announced by the hub.
+# direct = true
+
 # Adapter commands are executed directly, without a shell.
 display_name = "My worker"
 

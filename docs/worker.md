@@ -180,3 +180,15 @@ session ID). A `crash: true` step exits once, writing a sibling `.crashed` marke
 so restart tests can proceed. Fake sessions persist in a sibling `.sessions.json`
 file; `log` optionally records received JSON-RPC messages. No test invokes a real
 agent or needs network access.
+
+## Direct connections
+
+After pairing and approval, the hub announces its configured direct endpoints inside the authenticated channel. The worker saves them to `worker/endpoints.json` under `NAVARCH_HOME`. On reconnect it tries at most three saved addresses, allowing two seconds per address including authentication, then falls back to the relay. While on a relay connection, an authenticated announcement containing any address not in the previously stored list (including the first announcement) triggers a direct attempt immediately. The five-minute background retry continues after failed attempts; identical announcements or address removals do not trigger extra attempts. A successful direct handshake takes over without cancelling active turns. Reliable acknowledgements and deduplication preserve results through the switch.
+
+Direct connections require a reachable hub listener (see [hub configuration](hub.md#direct-connections)); Navarch performs no network discovery. To keep a worker on the relay, set this top-level setting in `worker.toml` and restart it:
+
+```toml
+direct = false
+```
+
+The default is `direct = true`. An explicitly configured local Unix socket continues to take precedence over remote links.

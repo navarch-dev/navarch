@@ -4,6 +4,10 @@ use std::{path::PathBuf, time::Duration};
 /// Source of replacement links. Tests can provide channel-fed in-memory links.
 #[async_trait]
 pub trait Connector: Send {
+    /// Authenticated endpoint state, when this connector supports direct links.
+    fn endpoint_state(&self) -> Option<EndpointState> {
+        None
+    }
     /// Attempt one connection.
     async fn connect(&mut self) -> Result<Box<dyn Link>, LinkError>;
 }
@@ -34,6 +38,9 @@ impl ReconnectingLink {
             connector,
             delay: 1,
         }
+    }
+    pub(crate) fn endpoint_state(&self) -> Option<EndpointState> {
+        self.connector.endpoint_state()
     }
     /// Keep attempting until a connection succeeds. Cancellation is safe.
     pub async fn connect(&mut self) -> Box<dyn Link> {

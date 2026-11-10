@@ -7,6 +7,8 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+if-addrs.workspace = true
+serde = { workspace = true }
 rand.workspace = true
 bytes.workspace = true
 
@@ -16,7 +18,6 @@ navarch-store.workspace = true
 navarch-transport.workspace = true
 navarch-crypto.workspace = true
 tokio.workspace = true
-serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 uuid.workspace = true

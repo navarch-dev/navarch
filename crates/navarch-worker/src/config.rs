@@ -56,15 +56,27 @@ fn executable(path: &Path) -> bool {
     }
 }
 /// Local worker settings. The local hub socket is resolved from NAVARCH_HOME.
-#[derive(Clone, Debug, Default, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
     /// Display name for capability reports.
     pub display_name: String,
     /// Optional explicit local hub socket; takes precedence over paired relay settings.
     pub local_hub_socket: Option<PathBuf>,
+    /// Disable direct connections and relay upgrades when false.
+    pub direct: bool,
     /// Configured adapters.
     pub agents: Vec<AgentConfig>,
+}
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            display_name: String::new(),
+            local_hub_socket: None,
+            direct: true,
+            agents: vec![],
+        }
+    }
 }
 impl Config {
     /// Parse worker TOML with field-aware errors.

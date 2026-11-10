@@ -136,3 +136,11 @@ Remote protocol failures use generic errors. Pairing-code display is intentional
 output, not a tracing event. Avoid capturing that terminal output in shared logs.
 The limitations and ordering/record choices are recorded in
 [the M3 security notes](notes/m3-open-questions.md).
+
+## Direct TCP listener
+
+| Attacker | Can | Cannot |
+|---|---|---|
+| LAN attacker reaching an explicitly enabled direct port | Learn that a hub listens there; attempt TCP connections within 64 concurrent unauthenticated handshakes and 10 attempts per source IP per rolling minute | Complete Noise KK without pinned keys, distinguish which machine IDs are active from a failed handshake, or read or forge authenticated messages |
+
+The complete direct handshake, including magic and hello, has a ten-second deadline. Source tracking is bounded to 4096 active source IPs; new sources are refused while full. The hub gives every syntactically valid hello the same fresh nonce prelude and waits for the first KK frame before dropping unknown, pending or revoked IDs **without invoking Noise**. Active IDs with invalid first KK frames are also dropped without a reply. This ordering avoids turning the clear nonce exchange or early EOF into a paired-machine lookup oracle. Endpoint announcements travel only inside the established Noise channel; the relay cannot read or alter them.

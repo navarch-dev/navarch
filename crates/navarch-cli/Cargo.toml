@@ -37,6 +37,8 @@ async-trait.workspace = true
 rustix.workspace = true
 
 [dev-dependencies]
+plist.workspace = true
+configparser.workspace = true
 base64.workspace = true
 uuid.workspace = true
 navarch-acp = { workspace = true, features = ["testing"] }

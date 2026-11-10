@@ -14,8 +14,11 @@ impl Hub {
                 self.store
                     .machines()?
                     .into_iter()
-                    .map(|m| json!({"machine":m,"online":state.online.contains_key(&m.id)}))
+                    .map(|m| json!({"machine":m,"online":state.online.contains_key(&m.id),"connection":state.online.get(&m.id).map(|c|c.sender.connection_kind())}))
                     .collect(),
+            )),
+            Request::Subscribe { .. } | Request::SubscribeLive | Request::WaitForEvents { .. } => Err(HubError::Invalid(
+                "use the asynchronous event control path".into(),
             )),
             Request::ListSessions { .. } => Err(HubError::Invalid(
                 "use request_async for worker session discovery".into(),

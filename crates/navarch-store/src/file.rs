@@ -8,6 +8,13 @@ use std::{
     sync::{Arc, Mutex, MutexGuard, OnceLock, Weak},
 };
 
+#[derive(serde::Serialize, serde::Deserialize)]
+struct StoredInbox {
+    #[serde(flatten)]
+    event: InboxEvent,
+    #[serde(default)]
+    read: bool,
+}
 type Locks = HashMap<PathBuf, Weak<Mutex<()>>>;
 static LOCKS: OnceLock<Mutex<Locks>> = OnceLock::new();
 /// Filesystem store rooted at `NAVARCH_HOME/hub`, with atomic same-directory renames.
@@ -112,12 +119,56 @@ impl FileStore {
         self.write_toml("tasks/index.toml", &index)?;
         Ok(index)
     }
-    fn read_inbox(&self) -> Result<Vec<InboxEvent>, StoreError> {
+    fn read_inbox(&self) -> Result<Vec<StoredInbox>, StoreError> {
         self.read("inbox.jsonl")?
             .unwrap_or_default()
             .lines()
-            .map(|l| serde_json::from_str(l).map_err(StoreError::from))
+            .map(|line| {
+                let value: serde_json::Value =
+                    serde_json::from_str(line).map_err(StoreError::from)?;
+                if value.get("seq").is_none() {
+                    let envelope: navarch_proto::Envelope =
+                        serde_json::from_value(value["envelope"].clone())
+                            .map_err(StoreError::from)?;
+                    let kind = value["envelope"]["body"]["type"]
+                        .as_str()
+                        .unwrap_or("failed");
+                    let mut event = InboxEvent::worker(
+                        envelope,
+                        None,
+                        kind,
+                        "Legacy worker event; read the task card",
+                        0,
+                    );
+                    event.event.seq = self.reserve_seq()?;
+                    Ok(StoredInbox { event, read: false })
+                } else {
+                    serde_json::from_value(value).map_err(StoreError::from)
+                }
+            })
             .collect()
+    }
+    fn write_inbox(&self, events: &[StoredInbox]) -> Result<(), StoreError> {
+        let mut bytes = Vec::new();
+        for event in events {
+            serde_json::to_writer(&mut bytes, event).map_err(StoreError::from)?;
+            bytes.push(b'\n');
+        }
+        self.write("inbox.jsonl", &bytes)
+    }
+    fn reserve_seq(&self) -> Result<u64, StoreError> {
+        let seq: u64 = self
+            .read("event-seq")?
+            .unwrap_or_else(|| "0".into())
+            .trim()
+            .parse()
+            .map_err(StoreError::from)?;
+        let seq = seq
+            .checked_add(1)
+            .ok_or_else(|| StoreError::Invalid("event sequence exhausted".into()))?;
+        // Reserve before writing an inbox row: a crash may leave a gap, never reuse.
+        self.write("event-seq", seq.to_string().as_bytes())?;
+        Ok(seq)
     }
 }
 impl Store for FileStore {
@@ -205,26 +256,53 @@ impl Store for FileStore {
         let _g = self.guard()?;
         self.rebuild()
     }
-    fn append_inbox(&self, event: InboxEvent) -> Result<(), StoreError> {
+    fn append_inbox(&self, mut event: InboxEvent) -> Result<Option<InboxEvent>, StoreError> {
         let _g = self.guard()?;
         let mut events = self.read_inbox()?;
-        if events.iter().any(|e| e.envelope.id == event.envelope.id) {
-            return Ok(());
+        if events.iter().any(|e| e.event.id == event.id) {
+            return Ok(None);
         }
-        events.push(event);
-        let mut bytes = Vec::new();
-        for e in events {
-            serde_json::to_writer(&mut bytes, &e).map_err(StoreError::from)?;
-            bytes.push(b'\n');
-        }
-        self.write("inbox.jsonl", &bytes)
+        event.event.seq = self.reserve_seq()?;
+        events.push(StoredInbox {
+            event: event.clone(),
+            read: false,
+        });
+        self.write_inbox(&events)?;
+        Ok(Some(event))
     }
-    fn inbox(&self, mark_read: bool) -> Result<Vec<InboxEvent>, StoreError> {
+    fn next_event_seq(&self) -> Result<u64, StoreError> {
         let _g = self.guard()?;
+        self.reserve_seq()
+    }
+    fn latest_event_seq(&self) -> Result<u64, StoreError> {
+        let _g = self.guard()?;
+        // Assign durable sequences to legacy rows before establishing a live baseline.
         let events = self.read_inbox()?;
+        self.write_inbox(&events)?;
+        self.read("event-seq")?
+            .unwrap_or_else(|| "0".into())
+            .trim()
+            .parse()
+            .map_err(StoreError::from)
+    }
+    fn inbox_after(&self, after_seq: u64, mark_read: bool) -> Result<Vec<InboxEvent>, StoreError> {
+        let _g = self.guard()?;
+        let mut events = self.read_inbox()?;
+        let unread = inbox_batch(
+            events
+                .iter()
+                .filter(|e| !e.read && e.event.event.seq > after_seq)
+                .map(|e| e.event.clone()),
+        )?;
         if mark_read {
-            self.write("inbox.jsonl", b"")?;
+            for event in &mut events {
+                if unread.iter().any(|e| e.id == event.event.id) {
+                    event.read = true;
+                }
+            }
         }
-        Ok(events)
+        // Also persist sequences assigned when migrating legacy inbox rows.
+        self.write_inbox(&events)?;
+        Ok(unread)
     }
 }

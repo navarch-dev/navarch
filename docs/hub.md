@@ -95,9 +95,9 @@ claude mcp add --transport stdio --scope user \
 See [Claude Code's stdio MCP registration documentation](https://code.claude.com/docs/en/mcp#option-3-add-a-local-stdio-server)
 for registration scopes. Check `/mcp` in Claude Code. `hub mcp` uses the official
 [`rmcp` SDK](https://github.com/modelcontextprotocol/rust-sdk) and holds no hub
-state. It translates tools to control requests. If the daemon is absent, startup
-reports the socket path and asks you to run `navarch hub serve`; later connection
-failures are visible tool errors. Stdout carries only MCP traffic.
+state. It translates tools to control requests. The MCP process stays alive when the daemon is absent; tool calls report the
+socket path and ask you to run `navarch hub serve`. A channel subscription
+reconnects automatically. Stdout carries only MCP traffic.
 
 No real adapter or Claude Code session is needed by the automated tests. The
 reviewer acceptance check is to dispatch a small task through MCP and then send a
@@ -249,3 +249,91 @@ Freshness-request replay history lasts for the ten-second handshake deadline,
 with a 65536-entry oldest-first secondary cap. Fresh two-sided Noise prologues
 keep recorded handshakes invalid even after history eviction or hub restart;
 network reconnections do not consume a lifetime handshake allowance.
+
+## Getting told when work finishes
+
+The inbox and task cards are authoritative. Events are bounded hints and never mark
+anything read or approve a permission. Each event has a persisted monotonic `seq`.
+There are three ways to follow work:
+
+- **Claude Code channel:** register the stdio server under the name `navarch`,
+  passing `hub mcp --channel` (or set `NAVARCH_CHANNEL=1` on the server):
+
+  ```sh
+  claude mcp add --transport stdio --scope user navarch -- /absolute/path/to/navarch hub mcp --channel
+  MCP_PROTOCOL_NEGOTIATION=legacy claude --dangerously-load-development-channels server:navarch
+  ```
+
+  Claude Code receives a block such as `<channel source="navarch" kind="finished"
+  card_id="..." machine="..." seq="...">` with a short instruction to call
+  `get_task`, or `read_inbox` and `answer_permission`. Finished, failed, rejected
+  and permission notifications include the event summary (at most 200 characters),
+  so the outcome is visible immediately. Each new MCP process starts at the daemon's
+  current sequence and sends only subsequent events; it does not replay the unread
+  backlog. Old events remain available through `read_inbox` and `wait_for_events`.
+  Notifications arrive without polling and do not require an acknowledgement.
+  The MCP process stays alive when
+  the daemon is down and reconnects with backoff, resuming after its last delivered
+  sequence. Without `--channel` or `NAVARCH_CHANNEL=1`, it sends no channel notifications.
+  Channels are a Claude Code research-preview feature, require a claude.ai or
+  Console login, and may change. Set `MCP_PROTOCOL_NEGOTIATION=legacy` on the
+  **Claude Code launch**, because channel registration requires a protocol revision
+  older than `2026-07-28`. rmcp's default is `2025-11-25`, but it echoes known
+  requested revisions, including `2026-07-28`.
+- **Any MCP client:** after dispatching, call `wait_for_events` when there is
+  nothing else to do. It returns early when unread newer entries exist, or returns
+  `[]` after `timeout_secs` (default 300, capped at 1800). Supply `after_seq` to
+  exclude older entries. Each returned event contains only `seq`, `kind`,
+  `card_id`, `step`, `machine`, `summary` and `time`, never a worker envelope.
+  Call `get_task` for full results, or `read_inbox` for permission request IDs and
+  offered options. It does not mark entries read; `read_inbox` still does. Large inboxes are returned in batches that fit the control frame limit; pass the last returned `seq` to wait for the next batch. Each `read_inbox` marks only its returned batch read.
+- **People and scripts:** run `navarch hub watch`, or `navarch hub watch --json`
+  for raw JSON lines. Ctrl-C stops watching. It replays unread inbox entries and
+  follows live events, including `worker_online` and `worker_offline` (these two
+  are bus-only and do not enter the inbox).
+
+A dedicated control connection starts streaming after
+`{"type":"subscribe","after_seq":42}`. Replay includes unread inbox rows with
+`seq > 42`; subsequent lines are live event objects. A slow subscriber receives
+`{"kind":"lagged"}` and the stream closes: re-read the inbox and resubscribe.
+The broadcast buffer holds 256 hints, so publishers never wait for subscribers.
+A socket write stalled for ten seconds closes the subscriber connection. Existing
+request/response control connections continue to work normally.
+
+For a fresh channel process, `{"type":"subscribe_live"}` atomically registers
+its receiver and snapshots the latest sequence under the hub's publication lock.
+Its first line is `{"kind":"ready","seq":42}`, followed only by events newer
+than that cursor, including events published while the ready line is being sent.
+The channel saves this baseline even before its first notification; after a socket
+drop it uses `subscribe` with the last delivered sequence (or that baseline).
+There is no separate cursor-query/subscription gap.
+
+Control responses also fit the 1 MiB line limit. If a large card or legacy log
+exceeds it, the daemon returns an error and leaves the connection usable; for
+example, retry `get_task` without `include_log` to request a smaller result.
+
+If a worker envelope itself nearly fills the frame limit, the extra inbox fields
+can make that single row too large for a control response. In that case,
+`read_inbox` returns its compact fields with `envelope: null`
+and `envelope_omitted: true`. The original envelope remains unchanged in
+`hub/inbox.jsonl`; its card ID, step and sequence remain available to clients.
+Subscription events and `wait_for_events` always contain only the seven compact
+hint fields, without `id`, `envelope` or `envelope_omitted`.
+
+## Direct connections
+
+The hub opens no TCP port by default. To allow paired workers to connect over a LAN, VPN or tailnet, add this to `~/.navarch/hub.toml` and restart `navarch hub serve`:
+
+```toml
+[direct]
+listen = "0.0.0.0:7391"
+# Optional: override automatic interface addresses, for example behind a VPN.
+advertise = ["192.168.1.20:7391"]
+```
+
+Without `advertise`, a wildcard listener advertises up to eight non-loopback, non-link-local interface addresses of its address family with the listening port. A listener bound to one specific address advertises only that address if eligible. For an intentional loopback setup, supply an explicit loopback `advertise` address. Only active paired machines receive these addresses inside their encrypted channel. There is no mDNS, broadcast or unauthenticated discovery.
+
+Transient TCP accept errors are logged at warn level and retried after 100 ms,
+so temporary resource exhaustion does not stop the listener.
+
+New authenticated connections replace the worker's old connection, retaining the same reliable delivery queue. `list_workers` and `navarch hub status` report `local`, `relay` or `direct`. Pairing still uses the configured relay; a worker with previously saved direct endpoints can reconnect without a running relay.

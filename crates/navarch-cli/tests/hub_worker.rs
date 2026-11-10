@@ -174,9 +174,15 @@ async fn hub_restart_mid_turn_retains_finished_and_deduplicates_durable_events()
         .inbox(false)
         .unwrap()
         .into_iter()
-        .find(|e| matches!(e.envelope.body, Body::Finished { .. }))
+        .find(|e| {
+            matches!(
+                e.envelope.as_ref().map(|e| &e.body),
+                Some(Body::Finished { .. })
+            )
+        })
         .unwrap()
-        .envelope;
+        .envelope
+        .unwrap();
     let count = f.store.inbox(false).unwrap().len();
     f.hub.apply(&event).unwrap();
     assert_eq!(f.store.inbox(false).unwrap().len(), count);

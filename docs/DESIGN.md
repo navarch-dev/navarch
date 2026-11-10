@@ -83,6 +83,7 @@ Hub to worker:
 | `Cancel` | `task_id` | Cancel the running turn. |
 | `PermissionAnswer` | `request_id`, `decision` | Answer an escalated permission request. |
 | `Probe` | none | Ask for a capability report. |
+| `HubEndpoints` | `direct` | Authenticated direct socket addresses, at most 8 entries of 64 bytes each. |
 | `ListSessions` | `request_id`, `agent?`, `cwd?`, `limit?` | Ask for the sessions this worker can resume, most recently updated first. `limit` defaults to 50 and is capped at 200. |
 | `Ack` | `of` | Acknowledge a worker message. |
 
@@ -191,7 +192,8 @@ Standalone commands (no hub required): `navarch worker run`, `send`, `sessions`,
 | `roles/<name>.md` | Markdown with TOML front matter | Agent, model, mode, preferences. User-edited. |
 | `tasks/<card_id>.toml` | TOML | Task card: title, project, state, steps, log. See "Cards and turns". |
 | `tasks/index.toml` | TOML | One entry per active task. Derived from cards; rebuilt on demand. |
-| `inbox.jsonl` | JSON lines | Worker events not yet read by the orchestrator. |
+| `inbox.jsonl` | JSON lines | Worker and pending-machine events with sequence and read markers; read rows retain deduplication IDs. |
+| `event-seq` | Decimal integer | Last reserved event sequence, including bus-only lifecycle events. |
 
 All writes are atomic. `navarch-store` exposes a `Store` trait with a file implementation and an in-memory one for tests.
 
@@ -217,7 +219,7 @@ All writes are atomic. `navarch-store` exposes a `Store` trait with a file imple
 
 ### 8a. Events for the orchestrator
 
-The orchestrator should not have to poll. Every inbox entry has a monotonic `seq` and is also published on an in-process event bus. Three consumers sit on top of it:
+The orchestrator should not have to poll. Every inbox entry has a monotonic `seq` and is also published on an in-process bounded event bus. The store atomically reserves `event-seq` before appending or publishing; a crash may leave a gap, but a restart never reuses a sequence. `worker_online` and `worker_offline` reserve sequences and go only to the bus. Inbox rows retain internal read markers for durable deduplication; clients see only unread rows. Large inbox responses are bounded prefixes that fit the 1 MiB control line limit, and `read_inbox` marks only the returned batch read. `wait_for_events` filters by `after_seq` before selecting that prefix and returns only compact events (`seq`, `kind`, `card_id`, `step`, `machine`, `summary`, `time`), never envelopes. `read_inbox` retains its existing envelope view. Three consumers sit on top of it:
 
 | Consumer | How | For |
 |---|---|---|
@@ -225,7 +227,13 @@ The orchestrator should not have to poll. Every inbox entry has a monotonic `seq
 | `wait_for_events` | A tool that blocks until an unread entry newer than `after_seq` exists or a timeout elapses | Any MCP client, including ones without channels |
 | `navarch hub watch` | Control API `subscribe`, one JSON line per event | People and scripts |
 
-Events are hints, not the record: the inbox and the task cards stay authoritative, a slow subscriber is told it `lagged` and re-reads the inbox, and nothing is marked read by an event. Channel text is written by the hub from fixed templates plus bounded summaries; it never carries a permission answer, so a channel cannot approve anything.
+Events are hints, not the record: the inbox and the task cards stay authoritative, a slow subscriber is told it `lagged` and re-reads the inbox, and nothing is marked read by an event. Each new channel process uses `subscribe_live`: the daemon atomically subscribes and snapshots the latest persisted sequence, returning a `ready` cursor before only newer events. This skips the old unread backlog without losing events during setup. Socket reconnection within that process uses `subscribe` from its last delivered sequence or initial baseline. The backlog remains accessible via `read_inbox` and `wait_for_events`. Channel text for finished, failed, rejected and permission_ask includes the bounded summary and the next-tool hint; it never carries a permission answer, so a channel cannot approve anything.
+
+An original worker envelope may nearly fill the wire frame by itself. If its
+inbox wrapper cannot fit a control response, the returned inbox view retains the
+compact event fields and sets `envelope: null`, `envelope_omitted: true`. The
+original envelope stays unchanged on disk; no opaque identifier is shortened.
+Read markers still apply only to returned IDs, and later rows remain readable.
 
 ## 9. Links (`navarch-transport`)
 
@@ -243,7 +251,8 @@ Frames are length-prefixed (u32 big-endian), at most 1 MiB.
 | Link | Used for | Security |
 |---|---|---|
 | `LocalLink` | Hub and worker on one machine, over the Unix socket `hub-worker.sock` | File permissions (0600). No encryption. |
-| `RelayLink` | Everything else, over a WebSocket to the relay | Noise channel end to end (section 10). |
+| `RelayLink` | Remote fallback, over a WebSocket to the relay | Noise channel end to end (section 10). |
+| `DirectLink` | Reachable paired peers over TCP | Same Noise channel as `RelayLink`. |
 
 Both sides reconnect with exponential backoff (1 s to 60 s, jittered). After a reconnect, unacknowledged envelopes are resent.
 
@@ -253,8 +262,9 @@ When hub and worker can reach each other over IP (same LAN, VPN, tailnet), they 
 
 - The hub opens a TCP listener only when `[direct] listen` is set in `hub.toml`.
 - A direct connection starts with the magic `NAVARCH-DIRECT/1\n`, then runs the same nonce exchange, the same `Noise_KK` handshake with the same prologue, and the same record chunking as `RelayLink`. There is one implementation of that handshake, shared by both links. No relay challenge is needed: Noise KK with pinned static keys authenticates both sides.
-- The hub selects the static key by the `MachineId` in the hello frame and drops unknown, pending or revoked machines before any Noise processing, without a distinguishing reply.
-- Addresses are never discovered on the network. The hub sends `HubEndpoints { direct }` inside an established channel, so only paired machines learn them and nobody in between can change them. The worker stores them and, on each reconnect, tries them (2 s each) before the relay; while on the relay it retries direct every 5 minutes and switches when it works.
+- The hub selects the static key by the `MachineId` in the hello frame and drops unknown, pending or revoked machines before any Noise processing, without a distinguishing reply. Every syntactically valid hello receives the same fresh nonce prelude; the hub waits for the first KK frame before rejecting an unauthorized ID. This prevents the clear prelude or early EOF from revealing paired IDs; an active ID with an invalid first KK frame also receives no reply.
+- A transient TCP accept error is logged at warn level and retried after 100 ms; it never terminates the listener.
+- Addresses are never discovered on the network. The hub sends `HubEndpoints { direct }` inside an established channel, so only paired machines learn them and nobody in between can change them. The worker stores them and, on each reconnect, tries them (2 s each) before the relay; while on the relay it immediately attempts direct when an authenticated announcement adds an address to the stored list (including the first announcement), keeps retrying every 5 minutes after failures and switches when it works. Identical lists and removals alone do not trigger extra attempts.
 - A new authenticated link for a machine replaces the previous one. Reliable delivery (acks, resend, de-duplication) makes the switch invisible to hub and worker logic.
 
 | Link | Used for | Security |
@@ -325,4 +335,3 @@ Task files are in `docs/tasks/`.
 - One binary, `navarch`. `navarch --version` reports the version and the commit it was built from.
 - `navarch service install|uninstall|status <hub|worker|relay>` manages a per-user service: a launchd agent on macOS, a systemd user unit on Linux. No root, no system-wide files.
 - Releases are built by CI on a version tag for macOS and Linux on x86-64 and arm64, with a `SHA256SUMS` file. `install.sh` downloads one, verifies the checksum and installs to a user directory; it never uses `sudo`.
-- The relay also ships as a container image built from `Dockerfile.relay`.

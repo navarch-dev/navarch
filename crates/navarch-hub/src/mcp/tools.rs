@@ -43,7 +43,7 @@ pub(super) fn tools() -> Vec<Tool> {
         ),
         tool(
             "dispatch",
-            "Start a task on an explicit active, online machine. Supply exactly one of agent or role, a worker-local cwd and prompt. The worker enforces its local policy. Returns card_id and task_id; poll get_task by card_id or read_inbox for completion.",
+            "Start a task on an explicit active, online machine. Supply exactly one of agent or role, a worker-local cwd and prompt. The worker enforces its local policy. Returns card_id and task_id; use wait_for_events when idle, then get_task by card_id or read_inbox.",
             json!({
                 "card_id":string("Optional existing card UUID for a hand-off."),"machine":machine,"agent":string("Configured adapter name reported by that machine. Omit when using role."),
                 "role":string("Name of hub/roles/<name>.md. Supplies agent, default model/mode and prompt preferences. Omit when using agent."),
@@ -80,8 +80,14 @@ pub(super) fn tools() -> Vec<Tool> {
         ),
         tool(
             "read_inbox",
-            "Read unread Finished, Failed, Rejected and PermissionAsk events and mark that batch read. PermissionAsk includes request_id and offered option IDs for answer_permission.",
+            "Read a bounded batch of unread Finished, Failed, Rejected, PermissionAsk and machine_pending events and mark only that batch read. PermissionAsk includes request_id and offered option IDs for answer_permission; seq is a durable event cursor.",
             json!({}),
+            &[],
+        ),
+        tool(
+            "wait_for_events",
+            "After dispatching, call this when you have nothing else to do. Waits for unread completion, permission or pairing events and returns early as soon as new events arrive. Returns compact events only: seq, kind, card_id, step, machine, summary, time; never envelopes. Use get_task for outcomes or read_inbox for permission request IDs and options. Does not mark anything read; read_inbox still does that.",
+            json!({"timeout_secs":{"type":"integer","minimum":0,"default":300,"maximum":1800},"after_seq":{"type":"integer","minimum":0,"description":"Only return unread entries with a larger sequence."}}),
             &[],
         ),
         tool(

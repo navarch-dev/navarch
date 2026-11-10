@@ -1,11 +1,11 @@
-use crate::{Hub, HubError, daemon::Incoming};
+use crate::{Hub, HubError};
 use navarch_crypto::{Identity, PairInfo, StaticKey};
 use navarch_proto::MachineId;
 use navarch_store::{Machine, MachineState};
 use navarch_transport::{Link, LinkError, RelayListener};
 use rand::Rng;
-use std::{collections::HashMap, sync::Arc, time::Duration};
-use tokio::sync::mpsc;
+use std::{sync::Arc, time::Duration};
+
 /// Relay identity and endpoint configured by CLI wiring.
 pub struct RemoteRelay {
     /// WebSocket URL.
@@ -41,6 +41,20 @@ impl Hub {
             state: MachineState::Pending,
             capabilities: None,
         })?;
+        self.publish_inbox(navarch_store::InboxEvent {
+            id: uuid::Uuid::new_v4(),
+            envelope: None,
+            envelope_omitted: false,
+            event: navarch_store::HubEvent {
+                seq: 0,
+                kind: "machine_pending".into(),
+                card_id: None,
+                step: None,
+                machine: id.clone(),
+                summary: "New paired machine awaits approval".into(),
+                time: crate::runtime::timestamp() / 1_000_000,
+            },
+        })?;
         Ok(id)
     }
     pub(crate) fn require_active(&self, id: &MachineId) -> Result<(), HubError> {
@@ -52,7 +66,6 @@ impl Hub {
     /// Maintain the hub's one relay connection and feed replacements to reliable
     /// delivery. Only known active keys reach a Noise responder.
     pub async fn serve_relay(&self, local: MachineId, remote: RemoteRelay) -> Result<(), HubError> {
-        let mut peers: HashMap<MachineId, mpsc::UnboundedSender<Box<dyn Link>>> = HashMap::new();
         let mut tasks = tokio::task::JoinSet::new();
         let mut delay = 1;
         loop {
@@ -76,19 +89,7 @@ impl Hub {
                     if self.require_active(&id).is_err() {
                         continue;
                     }
-                    if peers.get(&id).is_none_or(|s| s.is_closed()) {
-                        let (tx, rx) = mpsc::unbounded_channel();
-                        peers.insert(id.clone(), tx);
-                        let hub = self.clone();
-                        let machine = id.clone();
-                        let local = local.clone();
-                        tasks.spawn(async move {
-                            hub.run_peer(local, machine, Box::new(Incoming(rx))).await
-                        });
-                    }
-                    if let Some(tx) = peers.get(&id) {
-                        let _ = tx.send(Box::new(link));
-                    }
+                    self.admit_link(local.clone(), id, Box::new(link), &mut tasks)?;
                     while tasks.try_join_next().is_some() {}
                 }
             }
@@ -139,5 +140,8 @@ impl Link for ActiveLink {
     }
     fn peer(&self) -> &MachineId {
         self.inner.peer()
+    }
+    fn kind(&self) -> &'static str {
+        self.inner.kind()
     }
 }

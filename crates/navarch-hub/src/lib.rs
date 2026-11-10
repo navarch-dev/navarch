@@ -2,15 +2,19 @@
 #![forbid(unsafe_code)]
 pub mod control;
 mod daemon;
+mod direct;
+pub use direct::{DirectConfig, RemoteDirect};
 mod events;
 mod init;
 mod mcp;
 mod requests;
 mod runtime;
-pub use daemon::{serve, serve_with_relay};
+pub use daemon::{serve, serve_with_links, serve_with_relay};
 mod remote;
 pub use init::init;
-pub use mcp::serve_mcp;
+pub use mcp::{serve_mcp, serve_mcp_with_channel};
+/// Bounded event hint; persistent inbox and task cards remain authoritative.
+pub use navarch_store::HubEvent;
 pub use remote::RemoteRelay;
 pub use runtime::Hub;
 /// Hub validation, persistence, or connection failure.

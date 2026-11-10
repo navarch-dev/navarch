@@ -10,6 +10,8 @@ use std::{io::Write, path::Path, sync::Arc};
 pub struct HubConfig {
     /// Full WebSocket URL ending in /v1/ws.
     pub relay: Option<String>,
+    /// Explicit direct listener settings; absent by default.
+    pub direct: Option<navarch_hub::DirectConfig>,
 }
 impl HubConfig {
     /// Load inert defaults if absent.
@@ -118,13 +120,19 @@ pub fn worker_connector(
     if local_socket.is_none() && home.join("worker/hub.json").exists() {
         let paired: PairedHub =
             serde_json::from_slice(&std::fs::read(home.join("worker/hub.json"))?)?;
-        return Ok(Box::new(RelayConnector {
+        let relay = RelayConnector {
             url: paired.relay,
             identity,
             static_key: Arc::new(StaticKey::load_or_create(home)?),
             peer: navarch_crypto::machine_id(&paired.hub.identity).parse()?,
             peer_static: paired.hub.static_key,
-        }));
+        };
+        let config = navarch_worker::config::Config::load(home)?;
+        return Ok(Box::new(navarch_transport::PreferredConnector::new(
+            relay,
+            navarch_transport::EndpointState::load(&home.join("worker/endpoints.json"))?,
+            config.direct,
+        )));
     }
     Ok(Box::new(navarch_transport::LocalConnector {
         path: local_socket.unwrap_or_else(|| home.join("hub-worker.sock")),

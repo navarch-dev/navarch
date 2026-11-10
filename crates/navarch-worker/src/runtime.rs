@@ -241,6 +241,8 @@ impl Worker {
                 });
                 Ok(())
             }
+            Body::HubEndpoints { direct } => navarch_proto::validate_direct_endpoints(&direct)
+                .map_err(|e| WorkerError::Invalid(e.into())),
             Body::Ack { .. } => Ok(()),
             _ => Err(WorkerError::Invalid(
                 "expected a hub-to-worker message".into(),

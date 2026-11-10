@@ -235,3 +235,20 @@ fn limits_timestamp_ordering_and_legacy_wire_defaults() {
         }
     ));
 }
+
+#[test]
+fn authenticated_hub_endpoints_are_strictly_bounded() {
+    use navarch_proto::validate_direct_endpoints;
+    assert!(validate_direct_endpoints(&vec!["[2001:db8::1]:7391".into(); 8]).is_ok());
+    assert!(validate_direct_endpoints(&vec!["127.0.0.1:7391".into(); 9]).is_err());
+    assert!(validate_direct_endpoints(&["x".repeat(65)]).is_err());
+    assert!(validate_direct_endpoints(&["not a socket address".into()]).is_err());
+    let body = navarch_proto::Body::HubEndpoints {
+        direct: vec!["127.0.0.1:7391".into()],
+    };
+    let json = serde_json::to_string(&body).unwrap();
+    assert_eq!(
+        serde_json::from_str::<navarch_proto::Body>(&json).unwrap(),
+        body
+    );
+}

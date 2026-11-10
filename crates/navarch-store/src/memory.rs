@@ -12,6 +12,8 @@ struct State {
     tasks: BTreeMap<CardId, TaskCard>,
     inbox: Vec<InboxEvent>,
     index: Index,
+    seq: u64,
+    inbox_ids: std::collections::HashSet<uuid::Uuid>,
 }
 /// Process-local store for tests, with the same locking and index semantics as files.
 #[derive(Default)]
@@ -73,23 +75,43 @@ impl Store for MemoryStore {
         state.index = derive_index(&state.tasks.values().cloned().collect::<Vec<_>>(), vec![]);
         Ok(state.index.clone())
     }
-    fn append_inbox(&self, event: InboxEvent) -> Result<(), StoreError> {
+    fn append_inbox(&self, mut event: InboxEvent) -> Result<Option<InboxEvent>, StoreError> {
         let mut state = self.state()?;
-        if !state
-            .inbox
-            .iter()
-            .any(|e| e.envelope.id == event.envelope.id)
-        {
-            state.inbox.push(event);
+        if state.inbox_ids.contains(&event.id) {
+            return Ok(None);
         }
-        Ok(())
+        state.seq = state
+            .seq
+            .checked_add(1)
+            .ok_or_else(|| StoreError::Invalid("event sequence exhausted".into()))?;
+        event.event.seq = state.seq;
+        state.inbox_ids.insert(event.id);
+        state.inbox.push(event.clone());
+        Ok(Some(event))
     }
-    fn inbox(&self, mark_read: bool) -> Result<Vec<InboxEvent>, StoreError> {
+    fn next_event_seq(&self) -> Result<u64, StoreError> {
         let mut state = self.state()?;
-        Ok(if mark_read {
-            std::mem::take(&mut state.inbox)
-        } else {
-            state.inbox.clone()
-        })
+        state.seq = state
+            .seq
+            .checked_add(1)
+            .ok_or_else(|| StoreError::Invalid("event sequence exhausted".into()))?;
+        Ok(state.seq)
+    }
+    fn latest_event_seq(&self) -> Result<u64, StoreError> {
+        Ok(self.state()?.seq)
+    }
+    fn inbox_after(&self, after_seq: u64, mark_read: bool) -> Result<Vec<InboxEvent>, StoreError> {
+        let mut state = self.state()?;
+        let batch = inbox_batch(
+            state
+                .inbox
+                .iter()
+                .filter(|e| e.event.seq > after_seq)
+                .cloned(),
+        )?;
+        if mark_read {
+            state.inbox.retain(|e| !batch.iter().any(|b| b.id == e.id));
+        }
+        Ok(batch)
     }
 }

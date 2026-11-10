@@ -10,11 +10,36 @@ Navarch lets a single orchestrator session dispatch work to coding agents (Claud
 
 ## Status
 
-**Pre-release. It works end to end on the author's machines, but there is no packaged release and no security audit.**
+**0.1.0 development release. Interfaces and file formats can still change. The cryptography has not had an independent security audit.**
 
-What exists today: a hub, a worker and a relay in one binary; pairing with a one-time code; an end-to-end encrypted channel; local policy on every worker; hub tools exposed over MCP. See [docs/](docs/) for setup: [worker](docs/worker.md), [hub](docs/hub.md), [relay](docs/relay.md), [security](docs/security.md), [design](docs/DESIGN.md).
+What exists today: a hub, a worker and a relay in one binary; pairing with a one-time code; encrypted relay and optional direct links; local policy on every worker; hub tools and completion events exposed over MCP; release and service installation tooling. See [docs/](docs/) for setup: [worker](docs/worker.md), [hub](docs/hub.md), [relay](docs/relay.md), [security](docs/security.md), [design](docs/DESIGN.md).
 
-Build from source with `cargo build --release -p navarch-cli`. Interfaces and file formats can still change.
+See [installation](docs/install.md) for release archives, source builds, services, upgrades, and uninstalling.
+
+## Quick start
+
+Build from source, or use a published release as described in [installation](docs/install.md):
+
+```sh
+cargo build --locked --release -p navarch-cli
+mkdir -p "$HOME/.local/bin"
+cp target/release/navarch "$HOME/.local/bin/navarch"
+export PATH="$HOME/.local/bin:$PATH"
+navarch --version
+navarch hub init
+navarch worker init
+# Configure an installed ACP adapter and allowed roots in ~/.navarch/worker*.toml.
+navarch hub serve
+# In another terminal:
+navarch worker serve
+# In another terminal:
+navarch hub status
+claude mcp add --transport stdio navarch -- navarch hub mcp
+```
+
+Use [hub setup](docs/hub.md) to enable completion channels, `wait_for_events`, or
+`navarch hub watch`. For background operation, preview
+`navarch service install hub --dry-run` before installing hub and worker services.
 
 ## What it is for
 
@@ -61,7 +86,7 @@ All three are subcommands of one binary.
 3. **Route by strength.** Which agent handles which kind of task is a table you can edit.
 4. **Hand off through files, not conversation.** Every task has a card; every step leaves a short result. Any session can be lost and the work continues.
 5. **You decide the things that matter.** Merging, deploying, spending and deleting wait for you.
-6. **Outbound only.** No machine needs a public address or an open port.
+6. **Outbound by default.** Relay links need no inbound ports; direct links open a hub listener only when explicitly configured.
 
 ## Key choices
 
@@ -88,9 +113,10 @@ The threat model is in [docs/security.md](docs/security.md). The cryptographic d
 - [x] Single machine: hub plus a local worker driving agents over ACP
 - [x] Relay, pairing and end-to-end encryption
 - [x] Hub tools for the orchestrator
-- [ ] Push notifications to the orchestrator when a turn finishes
-- [ ] Direct connections on the same local network
-- [ ] Packaging, install script, independent security review
+- [x] Push notifications to the orchestrator when a turn finishes
+- [x] Direct connections on the same local network
+- [x] Packaging, install script, per-user services
+- [ ] Independent security review
 
 ## Non-goals
 

@@ -98,9 +98,9 @@ fn round_trip(store: &dyn Store) {
     assert_eq!(store.task(card.id).unwrap(), Some(card.clone()));
     assert_eq!(store.index().unwrap().tasks[0].id, card.id);
     assert_eq!(store.rebuild_index().unwrap(), store.index().unwrap());
-    let event = InboxEvent { envelope: event };
-    store.append_inbox(event.clone()).unwrap();
-    store.append_inbox(event.clone()).unwrap();
+    let event = InboxEvent::worker(event, None, "failed", "test", 0);
+    let event = store.append_inbox(event).unwrap().unwrap();
+    assert!(store.append_inbox(event.clone()).unwrap().is_none());
     assert_eq!(store.inbox(false).unwrap(), vec![event.clone()]);
     assert_eq!(store.inbox(true).unwrap(), vec![event]);
     assert!(store.inbox(true).unwrap().is_empty());
@@ -160,8 +160,8 @@ fn concurrent(stores: Vec<Arc<dyn Store>>) {
                     })
                     .unwrap();
                 store
-                    .append_inbox(InboxEvent {
-                        envelope: Envelope {
+                    .append_inbox(InboxEvent::worker(
+                        Envelope {
                             v: 1,
                             id: uuid::Uuid::new_v4(),
                             from: id.clone(),
@@ -171,7 +171,11 @@ fn concurrent(stores: Vec<Arc<dyn Store>>) {
                                 error: "test".into(),
                             },
                         },
-                    })
+                        None,
+                        "failed",
+                        "test",
+                        0,
+                    ))
                     .unwrap();
             });
         }
@@ -283,5 +287,182 @@ fn public_keys_write_hex_and_read_legacy_arrays() {
         let mut invalid = json[0].clone();
         invalid["public_key"] = key;
         assert!(serde_json::from_value::<Machine>(invalid).is_err());
+    }
+}
+
+#[test]
+fn event_sequences_survive_reads_reopen_and_legacy_migration() {
+    let temp = tempfile::tempdir().unwrap();
+    let store = FileStore::open(temp.path()).unwrap();
+    let envelope = navarch_proto::Envelope {
+        v: 1,
+        id: uuid::Uuid::new_v4(),
+        from: data_id(0),
+        to: data_id(1),
+        body: navarch_proto::Body::Failed {
+            task_id: navarch_proto::TaskId::new(),
+            error: "legacy".into(),
+        },
+    };
+    std::fs::write(
+        temp.path().join("inbox.jsonl"),
+        format!("{}\n", serde_json::json!({"envelope":envelope})),
+    )
+    .unwrap();
+    assert_eq!(store.latest_event_seq().unwrap(), 1);
+    let legacy = store.inbox(true).unwrap();
+    assert_eq!(legacy.len(), 1);
+    assert_eq!(legacy[0].event.seq, 1);
+    assert_eq!(legacy[0].envelope.as_ref(), Some(&envelope));
+    assert!(store.append_inbox(legacy[0].clone()).unwrap().is_none());
+    assert_eq!(store.next_event_seq().unwrap(), 2);
+    drop(store);
+    let store = FileStore::open(temp.path()).unwrap();
+    assert!(store.inbox(false).unwrap().is_empty());
+    let event = store
+        .append_inbox(InboxEvent::worker(
+            navarch_proto::Envelope {
+                id: uuid::Uuid::new_v4(),
+                ..envelope
+            },
+            None,
+            "failed",
+            "new",
+            0,
+        ))
+        .unwrap()
+        .unwrap();
+    assert_eq!(event.event.seq, 3);
+}
+
+#[test]
+fn inbox_batches_fit_control_frames_and_only_returned_entries_are_marked_read() {
+    let temp = tempfile::tempdir().unwrap();
+    let stores: Vec<Box<dyn Store>> = vec![
+        Box::new(MemoryStore::default()),
+        Box::new(FileStore::open(temp.path()).unwrap()),
+    ];
+    for store in stores {
+        for _ in 0..24 {
+            store
+                .append_inbox(InboxEvent::worker(
+                    navarch_proto::Envelope {
+                        v: 1,
+                        id: uuid::Uuid::new_v4(),
+                        from: data_id(0),
+                        to: data_id(1),
+                        body: navarch_proto::Body::Finished {
+                            task_id: navarch_proto::TaskId::new(),
+                            session_id: "s".into(),
+                            stop_reason: "end_turn".into(),
+                            result: "x".repeat(64 * 1024),
+                        },
+                    },
+                    None,
+                    "finished",
+                    "Complete",
+                    0,
+                ))
+                .unwrap();
+        }
+        let first = store.inbox(false).unwrap();
+        assert!(first.len() < 24);
+        assert!(
+            serde_json::to_vec(&serde_json::json!({"status":"ok","value":first}))
+                .unwrap()
+                .len()
+                < navarch_proto::MAX_ENVELOPE_BYTES
+        );
+        let cursor = first.last().unwrap().event.seq;
+        let later = store.inbox_after(cursor, false).unwrap();
+        assert_eq!(first.len() + later.len(), 24);
+        assert_eq!(store.inbox(true).unwrap(), first);
+        assert_eq!(store.inbox(false).unwrap(), later);
+        assert_eq!(store.inbox(true).unwrap(), later);
+        assert!(store.inbox(false).unwrap().is_empty());
+    }
+}
+
+#[test]
+fn a_large_original_envelope_never_blocks_inbox_replay_or_reading_later_rows() {
+    let temp = tempfile::tempdir().unwrap();
+    let stores: Vec<Box<dyn Store>> = vec![
+        Box::new(MemoryStore::default()),
+        Box::new(FileStore::open(temp.path()).unwrap()),
+    ];
+    for (index, store) in stores.into_iter().enumerate() {
+        let envelope = navarch_proto::Envelope {
+            v: 1,
+            id: uuid::Uuid::new_v4(),
+            from: data_id(0),
+            to: data_id(1),
+            body: navarch_proto::Body::Finished {
+                task_id: navarch_proto::TaskId::new(),
+                session_id: "s".repeat(navarch_proto::MAX_ENVELOPE_BYTES - 700),
+                stop_reason: "end_turn".into(),
+                result: "Complete".into(),
+            },
+        };
+        // The wire envelope is valid; only its added inbox wrapper exceeds the
+        // control budget. The opaque session identifier must not be rewritten.
+        assert!(serde_json::to_vec(&envelope).unwrap().len() < navarch_proto::MAX_ENVELOPE_BYTES);
+        let original = store
+            .append_inbox(InboxEvent::worker(
+                envelope.clone(),
+                Some(navarch_proto::CardId::new()),
+                "finished",
+                "Complete",
+                0,
+            ))
+            .unwrap()
+            .unwrap();
+        assert!(
+            serde_json::to_vec(&original).unwrap().len() > navarch_proto::MAX_ENVELOPE_BYTES - 1024
+        );
+        let later = store
+            .append_inbox(InboxEvent::worker(
+                navarch_proto::Envelope {
+                    id: uuid::Uuid::new_v4(),
+                    body: navarch_proto::Body::Failed {
+                        task_id: navarch_proto::TaskId::new(),
+                        error: "Later event".into(),
+                    },
+                    ..envelope.clone()
+                },
+                None,
+                "failed",
+                "Later event",
+                0,
+            ))
+            .unwrap()
+            .unwrap();
+        let batch = store.inbox(false).unwrap();
+        assert_eq!(batch.len(), 2);
+        assert_eq!(batch[0].event, original.event);
+        assert!(batch[0].envelope.is_none());
+        assert!(batch[0].envelope_omitted);
+        assert_eq!(batch[1], later);
+        assert!(
+            serde_json::to_vec(&serde_json::json!({"status":"ok","value":batch}))
+                .unwrap()
+                .len()
+                < navarch_proto::MAX_ENVELOPE_BYTES
+        );
+        assert_eq!(store.inbox(false).unwrap(), batch);
+        assert!(store.append_inbox(original.clone()).unwrap().is_none());
+        assert_eq!(
+            store.inbox_after(original.event.seq, true).unwrap(),
+            vec![later]
+        );
+        assert_eq!(store.inbox(true).unwrap(), vec![batch[0].clone()]);
+        assert!(store.inbox(false).unwrap().is_empty());
+        if index == 1 {
+            let stored = std::fs::read_to_string(temp.path().join("inbox.jsonl")).unwrap();
+            let row: serde_json::Value =
+                serde_json::from_str(stored.lines().next().unwrap()).unwrap();
+            assert_eq!(row["envelope"], serde_json::to_value(envelope).unwrap());
+            assert!(row.get("envelope_omitted").is_none());
+            assert_eq!(row["read"], true);
+        }
     }
 }

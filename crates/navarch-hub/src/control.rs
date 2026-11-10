@@ -85,6 +85,20 @@ pub enum Request {
     },
     /// Return and mark unread worker events read.
     ReadInbox,
+    /// Convert this connection to an event stream, replaying unread newer entries.
+    Subscribe {
+        /// Last delivered event sequence, absent to replay all unread events.
+        after_seq: Option<u64>,
+    },
+    /// Subscribe only to future events; first line is {kind: "ready", seq: latest}.
+    SubscribeLive,
+    /// Wait for compact unread events (no envelopes), returning early when one arrives; never marks read.
+    WaitForEvents {
+        /// Default 300 seconds, capped at 1800.
+        timeout_secs: Option<u64>,
+        /// Only return entries newer than this cursor.
+        after_seq: Option<u64>,
+    },
     /// Answer an outstanding permission with an offered choice or cancellation.
     AnswerPermission {
         /// Permission request ID from the inbox.
@@ -177,4 +191,61 @@ pub(crate) async fn read_line<R: tokio::io::AsyncBufRead + Unpin>(
             return Ok(Some(line));
         }
     }
+}
+
+/// One live event hint, or a signal to re-read the authoritative inbox.
+#[derive(Debug)]
+pub enum StreamEvent {
+    /// Bounded event fields, including a monotonic cursor.
+    Event(crate::HubEvent),
+    /// The subscriber fell behind; re-read the inbox and resubscribe.
+    Lagged,
+}
+/// A dedicated streaming control connection.
+pub struct Subscription {
+    reader: BufReader<tokio::net::unix::OwnedReadHalf>,
+}
+impl Subscription {
+    /// Read one JSON line; EOF means the daemon stopped or closed the subscription.
+    pub async fn recv(&mut self) -> Result<Option<StreamEvent>, HubError> {
+        let Some(line) = read_line(&mut self.reader).await? else {
+            return Ok(None);
+        };
+        let value: serde_json::Value = serde_json::from_slice(&line)?;
+        if value["kind"] == "lagged" {
+            return Ok(Some(StreamEvent::Lagged));
+        }
+        Ok(Some(StreamEvent::Event(serde_json::from_value(value)?)))
+    }
+}
+/// Subscribe to a daemon's replay and live stream on a dedicated socket.
+pub async fn subscribe(path: &Path, after_seq: Option<u64>) -> Result<Subscription, HubError> {
+    navarch_transport::validate_socket_path(path)?;
+    let stream = UnixStream::connect(path).await?;
+    let (read, mut write) = stream.into_split();
+    let mut bytes = serde_json::to_vec(&Request::Subscribe { after_seq })?;
+    bytes.push(b'\n');
+    write.write_all(&bytes).await?;
+    Ok(Subscription {
+        reader: BufReader::new(read),
+    })
+}
+
+/// Atomically establish a live-only stream and learn its starting cursor.
+/// Reconnect with `subscribe(path, Some(cursor))` after this succeeds.
+pub async fn subscribe_live(path: &Path) -> Result<(u64, Subscription), HubError> {
+    navarch_transport::validate_socket_path(path)?;
+    let stream = UnixStream::connect(path).await?;
+    let (read, mut write) = stream.into_split();
+    write.write_all(b"{\"type\":\"subscribe_live\"}\n").await?;
+    let mut reader = BufReader::new(read);
+    let line = read_line(&mut reader)
+        .await?
+        .ok_or_else(|| HubError::Invalid("subscription closed before ready".into()))?;
+    let ready: serde_json::Value = serde_json::from_slice(&line)?;
+    let seq = ready["seq"]
+        .as_u64()
+        .filter(|_| ready["kind"] == "ready")
+        .ok_or_else(|| HubError::Invalid("expected subscription ready cursor".into()))?;
+    Ok((seq, Subscription { reader }))
 }

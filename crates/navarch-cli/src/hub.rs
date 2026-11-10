@@ -12,7 +12,17 @@ pub enum HubCommand {
     /// Serve the local hub daemon and worker/control sockets.
     Serve,
     /// Serve MCP over stdio, connecting to the running daemon.
-    Mcp,
+    Mcp {
+        /// Send Claude Code research-preview channel notifications.
+        #[arg(long)]
+        channel: bool,
+    },
+    /// Follow unread replay and live hub events until interrupted.
+    Watch {
+        /// Print raw JSON lines.
+        #[arg(long)]
+        json: bool,
+    },
     /// Show known workers and online status.
     Status {
         /// Emit JSON instead of a readable table.
@@ -67,17 +77,19 @@ pub async fn run(command: HubCommand) -> Result<u8> {
                 public_key: identity.public_key(),
                 display_name: "hub".into(),
             };
-            let remote = crate::remote::HubConfig::load(&home)?
-                .relay
-                .map(|url| -> Result<_> {
-                    Ok(navarch_hub::RemoteRelay {
-                        url,
-                        identity: Arc::new(identity),
-                        static_key: Arc::new(navarch_crypto::StaticKey::load_or_create(&home)?),
-                    })
-                })
-                .transpose()?;
-            tokio::select! { result = navarch_hub::serve_with_relay(&home,hello,store,remote) => result?, result = tokio::signal::ctrl_c() => result? }
+            let config = crate::remote::HubConfig::load(&home)?;
+            let identity = Arc::new(identity);
+            let key = Arc::new(navarch_crypto::StaticKey::load_or_create(&home)?);
+            let remote = config.relay.map(|url| navarch_hub::RemoteRelay {
+                url,
+                identity,
+                static_key: key.clone(),
+            });
+            let direct = config.direct.map(|config| navarch_hub::RemoteDirect {
+                config,
+                static_key: key,
+            });
+            tokio::select! { result = navarch_hub::serve_with_links(&home,hello,store,remote,direct) => result?, result = tokio::signal::ctrl_c() => result? }
         }
         HubCommand::Machines { action, json } => match action {
             None => {
@@ -105,7 +117,51 @@ pub async fn run(command: HubCommand) -> Result<u8> {
                 println!("Revoked machine {id}.");
             }
         },
-        HubCommand::Mcp => navarch_hub::serve_mcp(&socket).await?,
+        HubCommand::Mcp { channel } => {
+            navarch_hub::serve_mcp_with_channel(
+                &socket,
+                channel || std::env::var("NAVARCH_CHANNEL").is_ok_and(|s| s == "1"),
+            )
+            .await?
+        }
+        HubCommand::Watch { json } => {
+            let mut subscription = control::subscribe(&socket, None).await?;
+            loop {
+                let event = tokio::select! { event = subscription.recv() => event?, result = tokio::signal::ctrl_c() => { result?; break; } };
+                match event {
+                    Some(control::StreamEvent::Event(event)) => {
+                        if json {
+                            println!("{}", serde_json::to_string(&event)?);
+                        } else {
+                            println!(
+                                "{} {} {} card={} {}",
+                                event.seq,
+                                event.kind,
+                                event.machine,
+                                event
+                                    .card_id
+                                    .map(|id| id.to_string())
+                                    .unwrap_or_else(|| "-".into()),
+                                event
+                                    .summary
+                                    .split_whitespace()
+                                    .collect::<Vec<_>>()
+                                    .join(" ")
+                            );
+                        }
+                    }
+                    Some(control::StreamEvent::Lagged) => {
+                        if json {
+                            println!("{{\"kind\":\"lagged\"}}");
+                        } else {
+                            eprintln!("Event stream lagged; re-read the inbox and restart watch.");
+                        }
+                        break;
+                    }
+                    None => break,
+                }
+            }
+        }
         HubCommand::Status { json } => {
             let value = control::call(&socket, &Request::ListWorkers).await?;
             println!("{}", render(&value, json, false)?);
@@ -132,7 +188,7 @@ fn render(value: &serde_json::Value, json: bool, tasks: bool) -> Result<String> 
         if tasks {
             vec!["CARD", "STATE", "STEPS", "TITLE"]
         } else {
-            vec!["ID", "STATE", "ONLINE", "NAME"]
+            vec!["ID", "STATE", "ONLINE", "NAME", "LINK"]
         }
         .into_iter()
         .map(str::to_owned)
@@ -160,10 +216,12 @@ fn render(value: &serde_json::Value, json: bool, tasks: bool) -> Result<String> 
                 text(&item["machine"]["state"]),
                 if item["online"] == true { "yes" } else { "no" }.into(),
                 text(&item["machine"]["display_name"]),
+                text(&item["connection"]),
             ]
         });
     }
-    let widths: Vec<_> = (0..4)
+    let columns = if tasks { 4 } else { 5 };
+    let widths: Vec<_> = (0..columns)
         .map(|i| rows.iter().map(|r| r[i].chars().count()).max().unwrap_or(0))
         .collect();
     let mut output = rows
@@ -174,7 +232,7 @@ fn render(value: &serde_json::Value, json: bool, tasks: bool) -> Result<String> 
                 .map(|(i, cell)| {
                     format!(
                         "{cell}{}",
-                        " ".repeat(if i == 3 {
+                        " ".repeat(if i + 1 == columns {
                             0
                         } else {
                             widths[i] - cell.chars().count() + 2
