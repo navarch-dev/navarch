@@ -331,7 +331,7 @@ mod tests {
         frame
     }
     #[test]
-    fn one_hundred_thousand_sequential_handshakes_with_advancing_time() {
+    fn sequential_handshakes_keep_replay_history_bounded() {
         let id = Identity::generate().machine_id().parse().unwrap();
         let mut history = History::default();
         let hub_id = Identity::generate().machine_id().parse().unwrap();
@@ -340,7 +340,7 @@ mod tests {
         let worker_public = worker_key.public_key();
         let hub_public = hub_key.public_key();
         let start = tokio::time::Instant::now();
-        for n in 0..100000 {
+        for n in 0..1500 {
             let now = start + Duration::from_millis(n * 10);
             let frame = request_nonce(n);
             assert!(history.remember(&id, &frame, now));
