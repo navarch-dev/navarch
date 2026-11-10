@@ -15,7 +15,14 @@ pub async fn serve(
         tokio::select! {
             message = streams.messages.recv() => {
                 let Some(message) = message else { return Ok(()); };
-                outbound.send(message)?;
+                let task_id = message.worker_task_id();
+                if let Err(error) = outbound.send(message) {
+                    if !matches!(error, navarch_transport::LinkError::Oversized { .. }) { return Err(error.into()); }
+                    tracing::error!(%error, "dropping undeliverable worker event");
+                    if let Some(task_id) = task_id {
+                        outbound.send(Body::Failed { task_id, error: error.to_string() })?;
+                    }
+                }
             }
             Some(_) = streams.events.recv() => {},
             event = incoming.recv() => match event {

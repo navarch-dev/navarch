@@ -6,6 +6,8 @@
   "body": {
     "type": "list_sessions",
     "request_id": "00000000-0000-4000-8000-000000000001",
-    "cwd": "/tmp"
+    "cwd": "/tmp",
+    "agent": "fake",
+    "limit": 25
   }
 }

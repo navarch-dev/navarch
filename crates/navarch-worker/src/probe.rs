@@ -35,7 +35,7 @@ impl Worker {
                 match tokio::time::timeout(std::time::Duration::from_secs(30), result).await {
                     Ok(Ok(session)) => {
                         capability.version = session.agent_version;
-                        capability.models = session.models;
+                        capability.models = session.models.into_iter().take(100).collect();
                     }
                     Ok(Err(e)) => capability.error = Some(e),
                     Err(_) => {
@@ -55,7 +55,15 @@ impl Worker {
         }
         report.repositories.sort();
         report.repositories.dedup();
-        report
+        let mut body = navarch_proto::Body::ProbeReport {
+            capabilities: report,
+        };
+        body.bound_worker_payload();
+        if let navarch_proto::Body::ProbeReport { capabilities } = body {
+            capabilities
+        } else {
+            unreachable!()
+        }
     }
     /// Diagnose executable availability without launching adapters or installing anything.
     pub fn doctor(&self) -> Vec<String> {
@@ -69,6 +77,9 @@ impl Worker {
     }
 }
 fn repositories(path: &Path, root: &Path, depth: usize, result: &mut Vec<std::path::PathBuf>) {
+    if result.len() >= 200 {
+        return;
+    }
     if path.join(".git").exists() {
         result.push(path.to_owned());
     }
@@ -79,6 +90,9 @@ fn repositories(path: &Path, root: &Path, depth: usize, result: &mut Vec<std::pa
         return;
     };
     for entry in entries.flatten() {
+        if result.len() >= 200 {
+            break;
+        }
         if entry.file_name().to_string_lossy().starts_with('.') {
             continue;
         }

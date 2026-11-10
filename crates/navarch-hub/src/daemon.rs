@@ -119,7 +119,19 @@ pub async fn serve(
 async fn control_connection(hub: Hub, stream: UnixStream) -> Result<(), HubError> {
     let (read, mut write) = stream.into_split();
     let mut reader = BufReader::new(read);
-    while let Some(line) = read_line(&mut reader).await? {
+    loop {
+        let line = match read_line(&mut reader).await {
+            Ok(Some(line)) => line,
+            Ok(None) => return Ok(()),
+            Err(error) => {
+                let mut bytes = serde_json::to_vec(&Response::Error {
+                    message: error.to_string(),
+                })?;
+                bytes.push(b'\n');
+                write.write_all(&bytes).await?;
+                return Ok(());
+            }
+        };
         let result = match serde_json::from_slice::<Request>(&line) {
             Ok(request) => hub.request_async(request).await,
             Err(error) => Err(error.into()),
@@ -134,5 +146,4 @@ async fn control_connection(hub: Hub, stream: UnixStream) -> Result<(), HubError
         bytes.push(b'\n');
         write.write_all(&bytes).await?;
     }
-    Ok(())
 }

@@ -624,6 +624,8 @@ async fn discover_and_adopt_external_sessions_only_inside_allowed_roots() {
     let request_id = uuid::Uuid::new_v4();
     f.worker
         .handle(Body::ListSessions {
+            agent: None,
+            limit: None,
             request_id,
             cwd: Some(f.temp.path().to_owned()),
         })
@@ -632,6 +634,7 @@ async fn discover_and_adopt_external_sessions_only_inside_allowed_roots() {
     let Body::SessionList {
         request_id: reply_id,
         sessions,
+        ..
     } = f.message().await
     else {
         panic!("expected list");
@@ -688,7 +691,7 @@ async fn discover_and_adopt_external_sessions_only_inside_allowed_roots() {
     assert_eq!(f.worker.sessions().unwrap().len(), 1);
 }
 #[tokio::test]
-async fn session_discovery_merges_registry_and_adapter_and_caps_each_agent() {
+async fn session_discovery_merges_registry_and_adapter_and_honours_query_limit() {
     use navarch_acp::AgentDriver;
     let mut f = Fixture::new(vec![], 1, "deny");
     let turn = TaskId::new();
@@ -702,7 +705,14 @@ async fn session_discovery_merges_registry_and_adapter_and_caps_each_agent() {
         f.driver.new_session(f.req()).await.unwrap();
     }
     let sessions = f.worker.list_sessions(None).await.unwrap();
-    assert_eq!(sessions.len(), 500);
+    assert_eq!(sessions.len(), 50);
+    let (capped, truncated) = f
+        .worker
+        .query_sessions(None, None, Some(5000))
+        .await
+        .unwrap();
+    assert_eq!(capped.len(), 200);
+    assert!(truncated);
     let owned = sessions
         .iter()
         .find(|s| s.session_id.as_deref() == Some(&public))
@@ -717,4 +727,67 @@ async fn session_discovery_merges_registry_and_adapter_and_caps_each_agent() {
             .is_err()
     );
     assert_eq!(f.worker.sessions().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn oversized_permission_details_and_choices_are_bounded_before_emission() {
+    let mut request = permission();
+    request.detail = "界\0".repeat(30000);
+    request.tool = "tool".repeat(1000);
+    request.options = (0..50)
+        .map(|i| PermissionOption {
+            id: format!("choice-{i}"),
+            name: "界".repeat(1000),
+            kind: PermissionOptionKind::AllowOnce,
+        })
+        .collect();
+    let mut f = Fixture::new(vec![vec![FakeStep::Permission(request)]], 1, "escalate");
+    let task_id = TaskId::new();
+    f.worker
+        .dispatch(task_id, "fake", f.req(), "test".into())
+        .await
+        .unwrap();
+    f.accepted().await;
+    let body = f.message().await;
+    assert!(encoded_envelope_len(&body).unwrap() <= MAX_ENVELOPE_BYTES);
+    let Body::PermissionAsk {
+        request_id,
+        tool,
+        detail,
+        options,
+        ..
+    } = body
+    else {
+        panic!()
+    };
+    assert_eq!(tool.chars().count(), 200);
+    assert!(detail.len() <= 16 * 1024);
+    assert_eq!(options.len(), 32);
+    assert!(options.iter().all(|o| o.name.chars().count() == 200));
+    // A choice removed by the wire bound must not authorize the operation.
+    f.worker.answer_permission(
+        request_id,
+        PermissionDecision::Selected {
+            option_id: "choice-49".into(),
+        },
+    );
+    f.finished(task_id).await;
+    assert_eq!(f.event().await.event, AgentEvent::Other("Cancelled".into()));
+}
+
+#[tokio::test]
+async fn probe_repository_discovery_stops_at_two_hundred() {
+    let f = Fixture::new(vec![], 1, "deny");
+    for i in 0..250 {
+        std::fs::create_dir_all(f.temp.path().join(format!("repo-{i}/.git"))).unwrap();
+    }
+    let report = f.worker.probe().await;
+    assert_eq!(report.repositories.len(), 200);
+    assert!(
+        encoded_envelope_len(&Body::ProbeReport {
+            capabilities: report
+        })
+        .unwrap()
+            <= LIST_ENVELOPE_BYTES
+    );
 }

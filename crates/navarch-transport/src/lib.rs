@@ -15,7 +15,7 @@ pub use reliable::{Delivery, ReliableEvent, ReliableHandle, ReliableTask, reliab
 pub use socket::{PrivateListener, validate_socket_path};
 
 /// Maximum frame payload length.
-pub const MAX_FRAME: usize = 1024 * 1024;
+pub const MAX_FRAME: usize = navarch_proto::MAX_ENVELOPE_BYTES;
 /// Link, framing, or envelope failure.
 #[derive(Debug, thiserror::Error)]
 pub enum LinkError {
@@ -25,6 +25,16 @@ pub enum LinkError {
     /// Invalid or oversized input.
     #[error("link protocol: {0}")]
     Protocol(String),
+    /// An encoded envelope cannot fit in a frame and was not queued.
+    #[error(
+        "encoded envelope is {size} bytes and exceeds the 1 MiB frame limit ({limit} bytes); shorten the prompt or payload"
+    )]
+    Oversized {
+        /// Encoded byte count.
+        size: usize,
+        /// Maximum allowed bytes.
+        limit: usize,
+    },
     /// Peer or owner stopped.
     #[error("link closed")]
     Closed,

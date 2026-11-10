@@ -13,10 +13,11 @@ pub(crate) struct Connection {
     pub token: Uuid,
     pub sender: ReliableHandle,
 }
+type SessionReply = tokio::sync::oneshot::Sender<(Vec<WorkerSession>, bool)>;
+
 pub(crate) struct State {
     pub online: HashMap<MachineId, Connection>,
-    pub session_queries:
-        HashMap<Uuid, (MachineId, tokio::sync::oneshot::Sender<Vec<WorkerSession>>)>,
+    pub session_queries: HashMap<Uuid, (MachineId, SessionReply)>,
 }
 /// Shared hub state; workers interact only through protocol envelopes.
 #[derive(Clone)]
@@ -112,6 +113,7 @@ impl Hub {
             Body::Dispatch { task_id, .. } | Body::SendToSession { task_id, .. } => *task_id,
             _ => return Err(HubError::Invalid("expected task command".into())),
         };
+        sender.validate(&body)?;
         let mut card = if let Some(id) = card_id {
             self.card(id)?
         } else {

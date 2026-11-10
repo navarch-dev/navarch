@@ -10,6 +10,7 @@ license = "Apache-2.0"
 repository = "https://github.com/navarch-dev/navarch"
 
 [workspace.dependencies]
+chrono = { version = "0.4", default-features = false, features = ["std"] }
 agent-client-protocol = { version = "5.1.0", features = ["process"] }
 async-trait = "0.1"
 rustix = { version = "1.1", features = ["fs"] }

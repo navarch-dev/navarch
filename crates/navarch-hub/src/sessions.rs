@@ -8,7 +8,12 @@ impl Hub {
     /// Execute control operations, querying workers asynchronously for session lists.
     pub async fn request_async(&self, request: Request) -> Result<Value, HubError> {
         match request {
-            Request::ListSessions { machine, cwd } => self.list_sessions(machine, cwd).await,
+            Request::ListSessions {
+                machine,
+                agent,
+                cwd,
+                limit,
+            } => self.list_sessions(machine, agent, cwd, limit).await,
             Request::SendToSession {
                 machine,
                 session_id,
@@ -25,7 +30,9 @@ impl Hub {
             {
                 // A worker-registry session may predate this hub. Resolve its
                 // adapter identity over the protocol before creating its card.
-                let list = self.list_sessions(Some(machine.clone()), None).await?;
+                let list = self
+                    .list_sessions(Some(machine.clone()), None, None, Some(200))
+                    .await?;
                 let session = list["sessions"]
                     .as_array()
                     .and_then(|sessions| {
@@ -59,8 +66,11 @@ impl Hub {
     async fn list_sessions(
         &self,
         machine: Option<MachineId>,
+        agent: Option<String>,
         cwd: Option<PathBuf>,
+        limit: Option<usize>,
     ) -> Result<Value, HubError> {
+        let limit = navarch_proto::session_limit(limit);
         let machines = self
             .store
             .machines()?
@@ -72,9 +82,22 @@ impl Hub {
         for machine in machines {
             let hub = self.clone();
             let cwd = cwd.clone();
-            let fallback = cards.iter().flat_map(|c| &c.steps).filter(|s| s.machine == machine.id && cwd.as_ref().is_none_or(|cwd| s.cwd.as_ref() == Some(cwd)))
-                .filter_map(|s| s.session.as_ref().map(|id| (id.clone(), json!({"machine":s.machine,"session_id":id,"agent":s.agent,"adapter_session_id":s.adapter_session_id,"cwd":s.cwd,"stale":true}))))
+            let agent = agent.clone();
+            let mut observations: Vec<_> = cards
+                .iter()
+                .flat_map(|c| &c.steps)
+                .filter(|s| {
+                    s.machine == machine.id
+                        && agent.as_ref().is_none_or(|agent| agent == &s.agent)
+                        && cwd.as_ref().is_none_or(|cwd| s.cwd.as_ref() == Some(cwd))
+                })
+                .collect();
+            observations.sort_by_key(|s| s.created_at);
+            let mut fallback = observations.into_iter().filter_map(|s| s.session.as_ref().map(|id| (id.clone(), json!({"machine":s.machine,"session_id":id,"agent":s.agent,"adapter_session_id":s.adapter_session_id,"cwd":s.cwd,"updated_at":s.created_at / 1_000_000,"stale":true}))))
                 .collect::<std::collections::BTreeMap<_,_>>().into_values().collect::<Vec<_>>();
+            fallback.sort_by_key(|s| std::cmp::Reverse(s["updated_at"].as_u64()));
+            let fallback_truncated = fallback.len() > limit;
+            fallback.truncate(limit);
             queries.spawn(async move {
                 let request_id = Uuid::new_v4();
                 struct Cleanup {
@@ -99,7 +122,12 @@ impl Hub {
                     state
                         .session_queries
                         .insert(request_id, (machine.id.clone(), tx));
-                    sender.send(Body::ListSessions { request_id, cwd })?;
+                    sender.send(Body::ListSessions {
+                        request_id,
+                        agent,
+                        cwd,
+                        limit: Some(limit),
+                    })?;
                     Ok::<_, HubError>(rx)
                 })();
                 let sessions = match response {
@@ -110,26 +138,42 @@ impl Hub {
                     Err(_) => None,
                 };
                 sessions
-                    .map(|sessions| {
-                        sessions
-                            .into_iter()
-                            .map(|s| {
-                                let mut value = serde_json::to_value(s).unwrap_or_default();
-                                value["machine"] = json!(machine.id);
-                                value["stale"] = json!(false);
-                                value
-                            })
-                            .collect()
+                    .map(|(sessions, truncated)| {
+                        (
+                            sessions
+                                .into_iter()
+                                .map(|s| {
+                                    let mut value = serde_json::to_value(s).unwrap_or_default();
+                                    value["machine"] = json!(machine.id);
+                                    value["stale"] = json!(false);
+                                    value
+                                })
+                                .collect::<Vec<_>>(),
+                            truncated,
+                            false,
+                        )
                     })
-                    .unwrap_or(fallback)
+                    .unwrap_or((fallback, fallback_truncated, true))
             });
         }
         let mut sessions = vec![];
+        let mut truncated = false;
+        let mut stale = false;
         while let Some(result) = queries.join_next().await {
-            sessions.extend(result.map_err(|e| HubError::Invalid(e.to_string()))?);
+            let (entries, more, unavailable) =
+                result.map_err(|e| HubError::Invalid(e.to_string()))?;
+            sessions.extend(entries);
+            truncated |= more;
+            stale |= unavailable;
         }
-        sessions.sort_by_key(|s| s.to_string());
-        Ok(json!({"sessions":sessions,"corrupt":corrupt}))
+        sessions.sort_by_key(|s| {
+            std::cmp::Reverse(
+                s["updated_at"]
+                    .as_i64()
+                    .or_else(|| navarch_proto::session_timestamp(s["updated_at"].as_str())),
+            )
+        });
+        Ok(json!({"sessions":sessions,"truncated":truncated,"stale":stale,"corrupt":corrupt}))
     }
 }
 
@@ -209,6 +253,8 @@ mod tests {
         let before = tokio::time::Instant::now();
         let result = hub
             .request_async(Request::ListSessions {
+                agent: None,
+                limit: None,
                 machine: Some(machine),
                 cwd: Some("/work".into()),
             })
@@ -217,14 +263,44 @@ mod tests {
         assert_eq!(before.elapsed(), Duration::from_secs(10));
         assert_eq!(result["sessions"][0]["session_id"], "public");
         assert_eq!(result["sessions"][0]["stale"], true);
+        assert_eq!(result["stale"], true);
+        assert_eq!(result["truncated"], false);
         assert!(hub.state().unwrap().session_queries.is_empty());
     }
+    #[tokio::test]
+    async fn offline_fallback_honours_filters_and_limit() {
+        let (hub, machine, _connection, _remote) = fixture().await;
+        let token = hub.state().unwrap().online[&machine].token;
+        hub.detach(&machine, token).unwrap();
+        for (agent, cwd, limit, count, truncated) in [
+            (Some("fake"), Some("/work"), Some(1), 1, false),
+            (Some("other"), None, None, 0, false),
+            (None, Some("/other"), None, 0, false),
+            (None, None, Some(0), 0, true),
+        ] {
+            let result = hub
+                .request_async(Request::ListSessions {
+                    machine: Some(machine.clone()),
+                    agent: agent.map(str::to_owned),
+                    cwd: cwd.map(PathBuf::from),
+                    limit,
+                })
+                .await
+                .unwrap();
+            assert_eq!(result["sessions"].as_array().unwrap().len(), count);
+            assert_eq!(result["truncated"], truncated);
+            assert_eq!(result["stale"], true);
+        }
+    }
+
     #[tokio::test]
     async fn cancelling_a_query_removes_its_waiter() {
         let (hub, machine, _connection, mut remote) = fixture().await;
         let h = hub.clone();
         let query = tokio::spawn(async move {
             h.request_async(Request::ListSessions {
+                agent: None,
+                limit: None,
                 machine: Some(machine),
                 cwd: None,
             })
@@ -266,6 +342,7 @@ mod tests {
             to: query.from,
             body: Body::SessionList {
                 request_id,
+                truncated: false,
                 sessions: vec![WorkerSession {
                     session_id: Some("standalone-public".into()),
                     agent: "fake".into(),

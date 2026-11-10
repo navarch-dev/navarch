@@ -1064,6 +1064,7 @@ dependencies = [
 name = "navarch-proto"
 version = "0.0.0"
 dependencies = [
+ "chrono",
  "data-encoding",
  "serde",
  "serde_json",

@@ -297,3 +297,45 @@ async fn listing_follows_pages_stops_at_500_and_preserves_metadata() {
     assert_eq!(pages[1]["params"]["cursor"], "180");
     assert_eq!(pages[2]["params"]["cursor"], "360");
 }
+
+#[tokio::test]
+async fn bounded_listing_stops_on_first_sufficient_page() {
+    let f = fixture(json!({"page_size":30}));
+    let sessions: std::collections::HashMap<_, _> = (0..5000).map(|i| {
+        let id = format!("external-{i:04}");
+        (id.clone(), json!({"sessionId":id,"cwd":f.temp.path(),"title":"External work","updatedAt":"2026-11-10T00:00:00Z"}))
+    }).collect();
+    std::fs::write(
+        f.temp.path().join("script.sessions.json"),
+        serde_json::to_vec(&sessions).unwrap(),
+    )
+    .unwrap();
+    let (sessions, truncated) = f
+        .driver
+        .list_sessions_bounded(Some(f.temp.path()), 50)
+        .await
+        .unwrap();
+    assert_eq!(sessions.len(), 50);
+    assert!(truncated);
+    assert_eq!(
+        f.requests()
+            .iter()
+            .filter(|r| r["method"] == "session/list")
+            .count(),
+        2
+    );
+    let (sessions, truncated) = f
+        .driver
+        .list_sessions_bounded(Some(f.temp.path()), 20)
+        .await
+        .unwrap();
+    assert_eq!(sessions.len(), 20);
+    assert!(truncated);
+    assert_eq!(
+        f.requests()
+            .iter()
+            .filter(|r| r["method"] == "session/list")
+            .count(),
+        3
+    );
+}

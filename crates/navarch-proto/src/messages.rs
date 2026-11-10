@@ -188,6 +188,12 @@ pub enum Body {
     ListSessions {
         /// Correlation identifier.
         request_id: Uuid,
+        /// Optional adapter filter.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        agent: Option<String>,
+        /// Maximum sessions; defaults to 50, capped at 200.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        limit: Option<usize>,
         /// Optional working-directory filter.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         cwd: Option<PathBuf>,
@@ -198,6 +204,9 @@ pub enum Body {
         request_id: Uuid,
         /// Resumable sessions known to this worker and its adapters.
         sessions: Vec<WorkerSession>,
+        /// More sessions exist or entries were removed to fit the encoded budget.
+        #[serde(default)]
+        truncated: bool,
     },
     /// Cancel a task's active turn.
     Cancel {

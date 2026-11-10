@@ -252,6 +252,18 @@ impl AgentDriver for AcpDriver {
             .map_err(error)
     }
     async fn list_sessions(&self, cwd: Option<&Path>) -> Result<Vec<SessionInfo>, DriverError> {
+        self.list_sessions_bounded(cwd, 500)
+            .await
+            .map(|(sessions, _)| sessions)
+    }
+    async fn list_sessions_bounded(
+        &self,
+        cwd: Option<&Path>,
+        limit: usize,
+    ) -> Result<(Vec<SessionInfo>, bool), DriverError> {
+        if limit == 0 {
+            return Ok((vec![], true));
+        }
         let mut state = self.state.lock().await;
         let live = self.ensure(&mut state).await?;
         if live
@@ -276,15 +288,26 @@ impl AgentDriver for AcpDriver {
                 .block_task()
                 .await
                 .map_err(error)?;
-            result.extend(response.sessions.into_iter().map(|s| SessionInfo {
-                session_id: s.session_id.to_string(),
-                cwd: s.cwd,
-                title: s.title,
-                updated_at: s.updated_at,
-            }));
-            result.truncate(500);
-            if result.len() >= 500 {
-                break;
+            let has_cursor = response.next_cursor.is_some();
+            result.extend(
+                response
+                    .sessions
+                    .into_iter()
+                    .filter(|s| cwd.is_none_or(|cwd| cwd == s.cwd))
+                    .map(|s| SessionInfo {
+                        session_id: s.session_id.to_string(),
+                        cwd: s.cwd,
+                        title: s.title,
+                        updated_at: s.updated_at,
+                    }),
+            );
+            result.sort_by_key(|s| {
+                std::cmp::Reverse(navarch_proto::session_timestamp(s.updated_at.as_deref()))
+            });
+            if result.len() >= limit {
+                let truncated = result.len() > limit || has_cursor;
+                result.truncate(limit);
+                return Ok((result, truncated));
             }
             cursor = response.next_cursor;
             if let Some(c) = &cursor {
@@ -295,6 +318,6 @@ impl AgentDriver for AcpDriver {
                 break;
             }
         }
-        Ok(result)
+        Ok((result, false))
     }
 }

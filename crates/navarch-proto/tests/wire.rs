@@ -196,6 +196,8 @@ fn dispatch_optional_settings_and_mcp_round_trip() {
 fn golden_list_sessions() {
     check(
         Body::ListSessions {
+            agent: Some("fake".into()),
+            limit: Some(25),
             request_id: id(),
             cwd: Some("/tmp".into()),
         },
@@ -207,6 +209,7 @@ fn golden_session_list() {
     check(
         Body::SessionList {
             request_id: id(),
+            truncated: false,
             sessions: vec![WorkerSession {
                 session_id: None,
                 agent: "fake".into(),

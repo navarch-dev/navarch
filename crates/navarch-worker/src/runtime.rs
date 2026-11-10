@@ -172,7 +172,8 @@ impl Worker {
     pub fn sessions(&self) -> Result<Vec<SessionRecord>, WorkerError> {
         Ok(self.state()?.registry.sessions())
     }
-    fn emit(&self, body: Body) {
+    fn emit(&self, mut body: Body) {
+        body.bound_worker_payload();
         let _ = self.inner.output.send(body);
     }
     /// Route the hub-to-worker operations through the same standalone runtime.
@@ -224,10 +225,19 @@ impl Worker {
                 });
                 Ok(())
             }
-            Body::ListSessions { request_id, cwd } => {
+            Body::ListSessions {
+                request_id,
+                agent,
+                cwd,
+                limit,
+            } => {
+                let (sessions, truncated) = self
+                    .query_sessions(agent.as_deref(), cwd.as_deref(), limit)
+                    .await?;
                 self.emit(Body::SessionList {
                     request_id,
-                    sessions: self.list_sessions(cwd.as_deref()).await?,
+                    sessions,
+                    truncated,
                 });
                 Ok(())
             }

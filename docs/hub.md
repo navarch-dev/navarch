@@ -68,7 +68,11 @@ path exceeds the platform limit, the error names the path and byte limit; set
 
 A worker reconnects automatically with jittered exponential delays of 1–60
 seconds. Its in-memory outbox keeps stable envelope IDs until acknowledged and
-resends them after reconnection. Acknowledgements follow application of events to
+resends them after reconnection. Encoded envelopes are checked before queuing;
+a message above 1 MiB returns an explicit size error without disconnecting.
+An oversized legacy outbox entry is logged and dropped; a worker turn event is
+replaced with a deliverable `Failed` event so its card cannot wait forever.
+Acknowledgements follow application of events to
 hub state. A live worker can finish a turn while the hub is down and deliver the
 result after it returns. Restarting the worker itself does not preserve its
 in-memory delivery outbox. Durable event-ID metadata on cards prevents replayed events from
@@ -109,7 +113,7 @@ with an ID returned by `list_workers`, `TURN_UUID` with a returned `task_id`,
 | Tool | Behavior | Example arguments |
 |---|---|---|
 | `list_workers` | Known machines, approval/online state and last capabilities. | `{}` |
-| `list_sessions` | Query worker registries and adapters; optionally filter by machine and cwd. A worker timeout (10 seconds) or offline worker returns hub-observed sessions marked `stale: true`. | `{"machine":"MACHINE"}` |
+| `list_sessions` | Query worker registries and adapters, newest first; filter by machine, agent and cwd. Limit defaults to 50 per worker and is capped at 200. Reports `truncated` and `stale`; a timeout (10 seconds) or offline worker uses hub-observed sessions. | `{"machine":"MACHINE","agent":"codex","cwd":"/absolute/repo","limit":50}` |
 | `dispatch` | Create a card and turn on an explicit machine; returns `card_id` and `task_id`. Pass `card_id` to append a hand-off step. Supply exactly one of `agent` or `role`. | `{"machine":"MACHINE","agent":"codex","cwd":"/absolute/path/to/repo","prompt":"Describe the test setup","title":"Inspect tests"}` |
 | `send_to_session` | Append to the session’s latest owning card; optional `card_id` overrides it. Returns `card_id` and a new turn `task_id`. Supply `agent` and an adapter session ID to adopt an external session. | `{"machine":"MACHINE","session_id":"SESSION","prompt":"Now explain the main entry point"}` |
 | `cancel` | Cancel the task's active turn or remove it from the session queue. | `{"task_id":"TURN_UUID"}` |
@@ -125,7 +129,11 @@ Optional `project` must name a configured project or alias. Optional `mode`,
 `model` and `mcp_servers` override/provide session settings. A server entry has
 `name`, `command`, optional `args` and optional `env`, with literal arguments.
 The hub validates machine approval, online state, reported agent and non-empty
-cwd; filesystem and agent allowlists remain worker decisions.
+cwd; filesystem and agent allowlists remain worker decisions. Dispatch and
+send-to-session reject an encoded envelope above 1 MiB before saving a queued
+card or sending anything. This check includes JSON escaping, session settings
+and appended role preferences; shorten the prompt or other payload when the
+error reports that it cannot fit.
 
 Permission choices must come from that request's `options`. To cancel, use
 `{"request_id":"REQUEST_UUID","decision":{"type":"cancelled"}}`.
@@ -156,12 +164,31 @@ at 200 characters and coalesced to at most one message per second per turn.
 
 `list_sessions` returns agent, adapter session ID, optional public worker session
 ID, cwd, title, updated timestamp and `navarch_started`, plus machine and `stale`.
-Adapter pagination is followed up to 500 sessions per agent; registry entries
-are preferred when merging. An external session is addressed with `agent` and
+The response also includes aggregate `truncated` and `stale` flags. Agent and cwd
+filters apply to both live results and stale fallback. `limit` defaults to 50 per
+worker and is capped at 200 (zero returns no entries). Results are ordered by
+most recent update, with unknown timestamps last. Adapter pagination stops once
+that adapter has supplied enough matching sessions for the query. Registry
+identity is preferred when merging duplicates. Titles are cut to 120 Unicode
+characters, and lists are shortened further until the full encoded worker
+envelope fits within 256 KiB. `truncated: true` means additional sessions may
+exist or entries were removed to fit that budget; shortening titles alone does
+not set it. An external session is addressed with `agent` and
 its `adapter_session_id` passed as `session_id`. The worker canonicalizes its
 reported cwd and checks `allowed_roots` and `allowed_agents` before adoption or
 resume. Adoption allocates a public worker session ID and retains
 `navarch_started: false` in the registry.
+
+Worker final results are capped at 64 KiB of UTF-8 bytes on a character boundary.
+Progress is capped at 200 characters. Permission tool titles and option labels
+are capped at 200 characters, detail at 16 KiB, and choices at 32; choice IDs
+over 1024 bytes are omitted rather than rewritten. If no representable choice
+remains, the worker cancels the permission request. Capability reports contain
+at most 200 repositories and 100 models per agent, with bounded descriptive
+strings; entries are removed if needed to fit a 256 KiB encoded envelope.
+Agent/model IDs over 1024 bytes are omitted rather than rewritten.
+Opaque session IDs and paths are preserved; undeliverable turn metadata
+produces `Failed`.
 
 The derived `hub/tasks/index.toml` contains only active cards. The file store
 rebuilds the index on opening and on every card write. Old one-turn cards without
@@ -181,7 +208,9 @@ Use a `type` matching the tool name, with the same arguments. For example:
 
 Failures use `{"status":"error","message":"..."}`. A connection may carry
 multiple requests. Input lines and worker frame payloads are limited to 1 MiB;
-worker frames have a four-byte big-endian length prefix. Control types live in
+worker frames have a four-byte big-endian length prefix. Oversized control
+requests return a size error asking the caller to shorten the prompt or payload.
+Control types live in
 `navarch_hub::control` and contain no MCP SDK types. Requests and events update
 state under one hub runtime lock; file writes use same-directory temporary files
 and atomic rename. FileStore instances opened on the same canonical directory

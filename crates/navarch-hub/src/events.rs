@@ -15,6 +15,7 @@ impl Hub {
         if let Body::SessionList {
             request_id,
             sessions,
+            truncated,
         } = &envelope.body
         {
             // Persist adapter identity and cwd on already observed steps, so a
@@ -43,7 +44,7 @@ impl Hub {
                 .is_some_and(|(machine, _)| machine == &envelope.from)
                 && let Some((_, reply)) = state.session_queries.remove(request_id)
             {
-                let _ = reply.send(sessions.clone());
+                let _ = reply.send((sessions.clone(), *truncated));
             }
             return Ok(());
         }

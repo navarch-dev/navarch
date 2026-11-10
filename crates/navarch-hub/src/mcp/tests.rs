@@ -66,6 +66,11 @@ async fn rmcp_handshake_tool_discovery_forwarding_and_errors() {
             json!({"name":"list_workers","arguments":{}}),
         ),
         (
+            5,
+            "tools/call",
+            json!({"name":"list_sessions","arguments":{"agent":"fake","cwd":"/work","limit":7}}),
+        ),
+        (
             4,
             "tools/call",
             json!({"name":"get_task","arguments":{"task_id":"00000000-0000-4000-8000-000000000001"}}),
@@ -91,6 +96,13 @@ async fn rmcp_handshake_tool_discovery_forwarding_and_errors() {
             for tool in tools {
                 assert!(tool["description"].as_str().unwrap().len() > 40);
                 assert_eq!(tool["inputSchema"]["type"], "object");
+                if tool["name"] == "list_sessions" {
+                    let properties = &tool["inputSchema"]["properties"];
+                    assert_eq!(properties["agent"]["type"], "string");
+                    assert_eq!(properties["cwd"]["type"], "string");
+                    assert_eq!(properties["limit"]["type"], "integer");
+                    assert_eq!(properties["limit"]["default"], 50);
+                }
                 if tool["name"] == "get_task" {
                     assert_eq!(
                         tool["inputSchema"]["properties"]["include_log"]["default"],
@@ -107,6 +119,14 @@ async fn rmcp_handshake_tool_discovery_forwarding_and_errors() {
                 serde_json::from_str(response["result"]["content"][0]["text"].as_str().unwrap())
                     .unwrap();
             assert_eq!(workers[0]["machine"]["public_key"], "ab".repeat(32));
+        } else if id == 5 {
+            assert_eq!(response["result"]["isError"], false);
+            let list: Value =
+                serde_json::from_str(response["result"]["content"][0]["text"].as_str().unwrap())
+                    .unwrap();
+            assert_eq!(list["sessions"], json!([]));
+            assert_eq!(list["stale"], true);
+            assert_eq!(list["truncated"], false);
         } else {
             assert_eq!(response["result"]["isError"], true);
             assert!(
@@ -117,6 +137,15 @@ async fn rmcp_handshake_tool_discovery_forwarding_and_errors() {
             );
         }
     }
+    let oversize = Mcp { socket: socket.clone() }.invoke("dispatch", serde_json::from_value(json!({
+        "machine":"aaaaaaaaaaaaaaaaaaaaaaaaaa","agent":"fake","cwd":"/work","prompt":"x".repeat(navarch_transport::MAX_FRAME)
+    })).unwrap()).await;
+    assert_eq!(oversize.is_error, Some(true));
+    assert!(
+        serde_json::to_string(&oversize)
+            .unwrap()
+            .contains("shorten the prompt or payload")
+    );
     service.abort();
     let _ = service.await;
     daemon.abort();

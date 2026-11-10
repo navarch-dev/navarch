@@ -2,16 +2,34 @@
 use super::*;
 use navarch_proto::WorkerSession;
 impl Worker {
-    /// Merge registry sessions with adapter listings, capped at 500 per agent.
+    /// Enumerate resumable sessions using the default query budget.
     pub async fn list_sessions(
         &self,
         cwd: Option<&Path>,
     ) -> Result<Vec<WorkerSession>, WorkerError> {
+        self.query_sessions(None, cwd, None)
+            .await
+            .map(|(sessions, _)| sessions)
+    }
+
+    /// Merge matching registry and adapter sessions, most recently updated first.
+    pub async fn query_sessions(
+        &self,
+        agent_filter: Option<&str>,
+        cwd: Option<&Path>,
+        limit: Option<usize>,
+    ) -> Result<(Vec<WorkerSession>, bool), WorkerError> {
+        let limit = navarch_proto::session_limit(limit);
         let canonical = cwd.map(canonical_cwd).transpose()?;
         let cwd = canonical.as_deref();
         let records = self.sessions()?;
         let mut result = vec![];
-        let mut agents: Vec<_> = self.drivers().iter().collect();
+        let mut truncated = false;
+        let mut agents: Vec<_> = self
+            .drivers()
+            .iter()
+            .filter(|(name, _)| agent_filter.is_none_or(|a| a == name.as_str()))
+            .collect();
         agents.sort_by_key(|(name, _)| *name);
         for (agent, driver) in agents {
             let mut merged = std::collections::BTreeMap::new();
@@ -32,15 +50,20 @@ impl Worker {
                     },
                 );
             }
-            match driver.list_sessions(cwd).await {
-                Ok(sessions) => {
-                    for session in sessions.into_iter().take(500) {
+            // Each adapter may contribute to the global newest N, so give each
+            // the query budget; never exhaust its entire paginated history.
+            match driver.list_sessions_bounded(cwd, limit).await {
+                Ok((sessions, more)) => {
+                    truncated |= more;
+                    for session in sessions {
                         if cwd.is_some_and(|p| p != session.cwd) {
                             continue;
                         }
                         if let Some(existing) = merged.get_mut(&session.session_id) {
                             existing.title = session.title;
-                            if session.updated_at.is_some() {
+                            if navarch_proto::session_timestamp(session.updated_at.as_deref())
+                                > navarch_proto::session_timestamp(existing.updated_at.as_deref())
+                            {
                                 existing.updated_at = session.updated_at;
                             }
                         } else {
@@ -63,12 +86,33 @@ impl Worker {
                     tracing::warn!(%agent, %error, "session discovery unavailable; retaining registry sessions")
                 }
             }
-            // Preserve registry sessions before filling remaining capacity from adapters.
-            let mut sessions: Vec<_> = merged.into_values().collect();
-            sessions.sort_by_key(|s| (s.session_id.is_none(), s.adapter_session_id.clone()));
-            result.extend(sessions.into_iter().take(500));
+            result.extend(merged.into_values());
         }
-        Ok(result)
+        result.sort_by(|a, b| {
+            navarch_proto::session_timestamp(b.updated_at.as_deref())
+                .cmp(&navarch_proto::session_timestamp(a.updated_at.as_deref()))
+                .then_with(|| {
+                    (&a.agent, &a.adapter_session_id).cmp(&(&b.agent, &b.adapter_session_id))
+                })
+        });
+        truncated |= result.len() > limit;
+        result.truncate(limit);
+        let mut body = Body::SessionList {
+            request_id: uuid::Uuid::nil(),
+            sessions: result,
+            truncated,
+        };
+        body.bound_worker_payload();
+        if let Body::SessionList {
+            sessions,
+            truncated,
+            ..
+        } = body
+        {
+            Ok((sessions, truncated))
+        } else {
+            unreachable!()
+        }
     }
     /// Address a registry ID, or an adapter-scoped ID which is adopted on first use.
     pub async fn send_target(

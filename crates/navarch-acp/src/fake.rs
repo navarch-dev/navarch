@@ -24,6 +24,7 @@ pub enum FakeStep {
 pub struct FakeDriver {
     scripts: Mutex<VecDeque<Vec<FakeStep>>>,
     sessions: Mutex<HashMap<String, (NewSession, watch::Sender<bool>)>>,
+    listed: Mutex<Vec<SessionInfo>>,
     permissions: SharedPermissionHandler,
     next: AtomicUsize,
     resumes: AtomicUsize,
@@ -35,9 +36,14 @@ impl FakeDriver {
             scripts: Mutex::new(scripts.into()),
             sessions: Mutex::new(HashMap::new()),
             permissions,
+            listed: Mutex::new(vec![]),
             next: AtomicUsize::new(1),
             resumes: AtomicUsize::new(0),
         }
+    }
+    /// Set externally discoverable sessions without starting a turn.
+    pub async fn set_listed_sessions(&self, sessions: Vec<SessionInfo>) {
+        *self.listed.lock().await = sessions;
     }
     /// Number of explicit session restorations.
     pub fn resume_count(&self) -> usize {
@@ -130,7 +136,7 @@ impl AgentDriver for FakeDriver {
         Ok(())
     }
     async fn list_sessions(&self, cwd: Option<&Path>) -> Result<Vec<SessionInfo>, DriverError> {
-        Ok(self
+        let mut result: Vec<_> = self
             .sessions
             .lock()
             .await
@@ -142,6 +148,18 @@ impl AgentDriver for FakeDriver {
                 updated_at: None,
                 title: None,
             })
-            .collect())
+            .collect();
+        result.extend(
+            self.listed
+                .lock()
+                .await
+                .iter()
+                .filter(|s| cwd.is_none_or(|cwd| cwd == s.cwd))
+                .cloned(),
+        );
+        result.sort_by_key(|s| {
+            std::cmp::Reverse(navarch_proto::session_timestamp(s.updated_at.as_deref()))
+        });
+        Ok(result)
     }
 }

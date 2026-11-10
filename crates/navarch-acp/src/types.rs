@@ -114,7 +114,22 @@ pub trait AgentDriver: Send + Sync {
     ) -> Result<TurnOutcome, DriverError>;
     /// Cancel a running turn.
     async fn cancel(&self, session: &SessionId) -> Result<(), DriverError>;
-    /// List all pages of adapter sessions.
+    /// List up to a caller's budget, stopping adapter pagination when it is filled.
+    /// Return newest sessions first. The boolean indicates that additional sessions may exist.
+    async fn list_sessions_bounded(
+        &self,
+        cwd: Option<&Path>,
+        limit: usize,
+    ) -> Result<(Vec<SessionInfo>, bool), DriverError> {
+        let mut sessions = self.list_sessions(cwd).await?;
+        sessions.sort_by_key(|s| {
+            std::cmp::Reverse(navarch_proto::session_timestamp(s.updated_at.as_deref()))
+        });
+        let truncated = sessions.len() > limit;
+        sessions.truncate(limit);
+        Ok((sessions, truncated))
+    }
+    /// List adapter sessions for standalone discovery and adoption (up to 500).
     async fn list_sessions(&self, cwd: Option<&Path>) -> Result<Vec<SessionInfo>, DriverError>;
 }
 /// Shared permission handler.
@@ -123,7 +138,7 @@ pub type SharedPermissionHandler = Arc<dyn PermissionHandler>;
 pub(crate) fn append_bounded(target: &mut String, text: &str) {
     let mut end = text
         .len()
-        .min((64 * 1024usize).saturating_sub(target.len()));
+        .min(navarch_proto::RESULT_BYTES.saturating_sub(target.len()));
     while !text.is_char_boundary(end) {
         end -= 1;
     }

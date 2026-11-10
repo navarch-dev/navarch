@@ -18,6 +18,10 @@ pub enum Request {
     ListSessions {
         /// Optional machine filter.
         machine: Option<MachineId>,
+        /// Optional adapter filter.
+        agent: Option<String>,
+        /// Maximum sessions per worker; defaults to 50, capped at 200.
+        limit: Option<usize>,
         /// Optional worker-local directory filter.
         cwd: Option<PathBuf>,
     },
@@ -121,6 +125,11 @@ pub async fn call(path: &Path, request: &Request) -> Result<serde_json::Value, H
     let (read, mut write) = stream.into_split();
     let mut bytes = serde_json::to_vec(request)?;
     bytes.push(b'\n');
+    if bytes.len() > navarch_transport::MAX_FRAME {
+        return Err(HubError::Invalid(
+            "control request exceeds 1 MiB; shorten the prompt or payload".into(),
+        ));
+    }
     write.write_all(&bytes).await?;
     let mut reader = BufReader::new(read);
     let line = read_line(&mut reader)
@@ -148,7 +157,9 @@ pub(crate) async fn read_line<R: tokio::io::AsyncBufRead + Unpin>(
         let end = buffer.iter().position(|b| *b == b'\n').map(|i| i + 1);
         let count = end.unwrap_or(buffer.len());
         if line.len() + count > navarch_transport::MAX_FRAME {
-            return Err(HubError::Invalid("control line exceeds 1 MiB".into()));
+            return Err(HubError::Invalid(
+                "control line exceeds 1 MiB; shorten the prompt or payload".into(),
+            ));
         }
         line.extend_from_slice(&buffer[..count]);
         reader.consume(count);

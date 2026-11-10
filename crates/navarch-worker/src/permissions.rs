@@ -119,20 +119,34 @@ impl Permissions {
         if decision != Decision::Escalate {
             return policy_answer(decision, &request);
         }
-        let id = uuid::Uuid::new_v4();
+        let mut ask = Body::PermissionAsk {
+            request_id: uuid::Uuid::new_v4(),
+            task_id,
+            tool: request.tool.clone(),
+            detail: request.detail.clone(),
+            options: request.options.clone(),
+        };
+        ask.bound_worker_payload();
+        let Body::PermissionAsk {
+            request_id: id,
+            ref options,
+            ..
+        } = ask
+        else {
+            return PermissionDecision::Cancelled;
+        };
+        if options.is_empty() {
+            return PermissionDecision::Cancelled;
+        }
+        // Only options actually offered to the human may authorize this operation.
+        request.options = options.clone();
         let (tx, rx) = oneshot::channel();
         if let Ok(mut pending) = self.pending.lock() {
             pending.insert(id, (task_id, tx));
         } else {
             return PermissionDecision::Cancelled;
         }
-        let _ = self.output.send(Body::PermissionAsk {
-            request_id: id,
-            task_id,
-            tool: request.tool.clone(),
-            detail: request.detail.clone(),
-            options: request.options.clone(),
-        });
+        let _ = self.output.send(ask);
         let human = async {
             match &self.escalation {
                 Some(handler) => handler.ask(request.clone()).await,

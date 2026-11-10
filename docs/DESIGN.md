@@ -97,7 +97,7 @@ Worker to hub:
 | `Finished` | `task_id`, `session_id`, `stop_reason`, `result` | Turn ended. `result` is the agent's final message, truncated to 64 KiB. |
 | `Failed` | `task_id`, `error` | Turn could not complete. |
 | `ProbeReport` | `capabilities` | OS, arch, agents with versions and available models, repositories, load. |
-| `SessionList` | `request_id`, `sessions` | Registry sessions plus sessions the adapters report (`session/list`), each with agent, adapter session ID, cwd, title, updated time and whether Navarch started it. |
+| `SessionList` | `request_id`, `sessions`, `truncated` | Registry sessions plus sessions the adapters report (`session/list`), each with agent, adapter session ID, cwd, title, updated time and whether Navarch started it. |
 | `Ack` | `of` | Acknowledge a hub message. |
 
 Rules:
@@ -105,6 +105,8 @@ Rules:
 - A receiver that sees an unknown `v` replies `Failed`/drops with a clear log line; it never guesses.
 - Unknown fields are ignored. Unknown `type` values are an error.
 - No envelope may exceed the frame limit (1 MiB). A sender checks the encoded size before queuing and returns an error to its caller instead of sending; it never queues an envelope it cannot deliver. Variable-size bodies are bounded at the source: `SessionList` honours `limit`, titles are cut to 120 characters, and the list is shortened further if the encoded envelope would exceed 256 KiB (`truncated: true`).
+- Results are bounded in UTF-8 bytes on a character boundary (64 KiB). Progress is capped at 200 characters. Permission tool titles and option labels are capped at 200 characters, detail at 16 KiB, and options at 32; opaque option IDs over 1024 bytes are omitted and an empty offered list is cancelled. Probe reports contain at most 200 repositories and 100 models per agent, bounded descriptive strings, and are shortened further to fit a 256 KiB encoded envelope.
+- Oversized legacy outbox entries are logged and dropped. A worker event carrying a `task_id` is replaced with a deliverable `Failed` for that turn. The hub rejects Dispatch/SendToSession payloads that cannot fit before recording a queued turn, including role preferences and JSON escaping in the size check.
 - Every non-`Ack` message is acknowledged. The sender retries unacknowledged messages after a reconnect. Receivers de-duplicate by `id`.
 
 ## 5. Driving agents (`navarch-acp`)

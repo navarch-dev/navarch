@@ -102,6 +102,8 @@ async fn dispatch_followup_cancel_permission_inbox_cards_and_index() {
     assert_eq!(
         f.hub
             .request_async(Request::ListSessions {
+                agent: None,
+                limit: None,
                 machine: None,
                 cwd: None
             })
@@ -380,6 +382,8 @@ async fn session_discovery_queries_worker_and_offline_fallback_is_stale() {
     let list = f
         .hub
         .request_async(Request::ListSessions {
+            agent: None,
+            limit: None,
             machine: Some(f.machine()),
             cwd: Some(f.temp.path().to_owned()),
         })
@@ -416,6 +420,8 @@ async fn session_discovery_queries_worker_and_offline_fallback_is_stale() {
     let fallback = f
         .hub
         .request_async(Request::ListSessions {
+            agent: None,
+            limit: None,
             machine: Some(f.machine()),
             cwd: None,
         })
@@ -429,4 +435,153 @@ async fn session_discovery_queries_worker_and_offline_fallback_is_stale() {
             .iter()
             .all(|s| s["stale"] == true)
     );
+}
+
+#[tokio::test]
+async fn five_thousand_long_title_sessions_are_bounded_and_link_stays_up() {
+    let f = Fixture::new(vec![], false).await;
+    f.driver
+        .set_listed_sessions(
+            (0..5000)
+                .map(|i| navarch_acp::SessionInfo {
+                    session_id: format!("external-{i:04}"),
+                    cwd: f.temp.path().canonicalize().unwrap(),
+                    title: Some("界\"\0".repeat(2000)),
+                    updated_at: Some((1_700_000_000_000u64 + i).to_string()),
+                })
+                .collect(),
+        )
+        .await;
+    for (agent, cwd, limit, expected) in [
+        (None, None, None, 50),
+        (Some("fake"), Some(f.temp.path().to_owned()), Some(9), 9),
+        (None, None, Some(5000), 200),
+        (Some("absent"), None, None, 0),
+        (None, Some("/".into()), None, 0),
+        (None, None, Some(0), 0),
+    ] {
+        let list = f
+            .hub
+            .request_async(Request::ListSessions {
+                machine: Some(f.machine()),
+                agent: agent.map(str::to_owned),
+                cwd,
+                limit,
+            })
+            .await
+            .unwrap();
+        assert_eq!(list["stale"], false);
+        assert_eq!(
+            list["truncated"],
+            (agent != Some("absent") && expected != 0) || limit == Some(0)
+        );
+        let sessions = list["sessions"].as_array().unwrap();
+        assert_eq!(sessions.len(), expected);
+        assert!(
+            sessions
+                .iter()
+                .all(|s| s["title"].as_str().unwrap().chars().count() == 120)
+        );
+        let timestamps: Vec<_> = sessions
+            .iter()
+            .map(|s| session_timestamp(s["updated_at"].as_str()))
+            .collect();
+        assert!(timestamps.windows(2).all(|w| w[0] >= w[1]));
+        if expected > 0 {
+            assert_eq!(sessions[0]["adapter_session_id"], "external-4999");
+        }
+        assert!(serde_json::to_vec(&list).unwrap().len() < LIST_ENVELOPE_BYTES);
+        assert_eq!(
+            f.hub.request(Request::ListWorkers).unwrap()[0]["online"],
+            true
+        );
+    }
+    // Exercise the exact worker-envelope budget with long opaque IDs and paths too.
+    f.driver
+        .set_listed_sessions(
+            (0..5000)
+                .map(|i| navarch_acp::SessionInfo {
+                    session_id: format!("{i:04}{}", "\0".repeat(2048)),
+                    cwd: f.temp.path().canonicalize().unwrap(),
+                    title: Some("界".repeat(1000)),
+                    updated_at: Some(i.to_string()),
+                })
+                .collect(),
+        )
+        .await;
+    f.worker
+        .handle(Body::ListSessions {
+            request_id: "00000000-0000-0000-0000-000000000001".parse().unwrap(),
+            agent: None,
+            cwd: None,
+            limit: Some(200),
+        })
+        .await
+        .unwrap();
+    let (sessions, truncated) = f
+        .worker
+        .query_sessions(None, None, Some(200))
+        .await
+        .unwrap();
+    assert!(truncated);
+    assert!(!sessions.is_empty() && sessions.len() < 200);
+    assert!(
+        encoded_envelope_len(&Body::SessionList {
+            request_id: "00000000-0000-0000-0000-000000000000".parse().unwrap(),
+            sessions,
+            truncated
+        })
+        .unwrap()
+            <= LIST_ENVELOPE_BYTES
+    );
+    let result = f
+        .hub
+        .request_async(Request::ListSessions {
+            machine: Some(f.machine()),
+            agent: None,
+            cwd: None,
+            limit: Some(200),
+        })
+        .await
+        .unwrap();
+    assert_eq!(result["stale"], false);
+    assert_eq!(result["truncated"], true);
+    let task = f.dispatch();
+    assert_eq!(f.card(task, "finished").await.steps[0].result_summary, "OK");
+}
+
+#[tokio::test]
+async fn oversize_prompts_including_role_preferences_leave_no_queued_cards() {
+    let f = Fixture::new(vec![], false).await;
+    for prompt in [
+        "x".repeat(MAX_ENVELOPE_BYTES),
+        "\0".repeat(MAX_ENVELOPE_BYTES / 6),
+    ] {
+        for kind in ["dispatch", "send_to_session"] {
+            let value = if kind == "dispatch" {
+                json!({"type":kind,"machine":f.machine(),"agent":"fake","cwd":f.temp.path(),"prompt":prompt})
+            } else {
+                json!({"type":kind,"machine":f.machine(),"agent":"fake","session_id":"external","prompt":prompt})
+            };
+            let error = f.hub.request(request(value)).unwrap_err().to_string();
+            assert!(error.contains("exceeds the 1 MiB frame limit"), "{error}");
+            assert!(f.store.tasks().unwrap().0.is_empty());
+        }
+    }
+    f.store
+        .put_role(
+            "large",
+            navarch_store::Role {
+                agent: "fake".into(),
+                mode: None,
+                model: None,
+                preferences: "\0".repeat(MAX_ENVELOPE_BYTES / 6),
+            },
+        )
+        .unwrap();
+    let error = f.hub.request(request(json!({"type":"dispatch","machine":f.machine(),"role":"large","cwd":f.temp.path(),"prompt":"hi"}))).unwrap_err().to_string();
+    assert!(error.contains("shorten the prompt"), "{error}");
+    assert!(f.store.tasks().unwrap().0.is_empty());
+    assert!(f.worker.sessions().unwrap().is_empty());
+    f.card(f.dispatch(), "finished").await;
 }

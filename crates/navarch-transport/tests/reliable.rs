@@ -53,6 +53,87 @@ impl Link for Chaos {
 fn id() -> MachineId {
     Identity::generate().machine_id().parse().unwrap()
 }
+#[tokio::test]
+async fn oversize_send_is_rejected_before_queueing_even_when_disconnected() {
+    let a = id();
+    let b = id();
+    let (tx, rx) = mpsc::unbounded_channel();
+    let (out, mut events, _task) = reliable(a.clone(), Box::new(Queue(rx)), 8);
+    for prompt in ["x".repeat(MAX_FRAME), "\0".repeat(MAX_FRAME / 6)] {
+        let error = out
+            .send(Body::SendToSession {
+                task_id: TaskId::new(),
+                session_id: "s".into(),
+                prompt,
+                agent: None,
+            })
+            .unwrap_err();
+        assert!(
+            matches!(error, LinkError::Oversized { size, limit } if size > limit && limit == MAX_FRAME)
+        );
+    }
+    out.send(Body::Probe).unwrap();
+    let (link, mut peer) = memory_pair(a, b);
+    tx.send(Box::new(link) as Box<dyn Link>).ok().unwrap();
+    assert!(matches!(
+        next(&mut events).await,
+        ReliableEvent::Connected(_)
+    ));
+    let envelope: Envelope = serde_json::from_slice(&peer.recv().await.unwrap()).unwrap();
+    assert_eq!(envelope.body, Body::Probe);
+    assert!(
+        tokio::time::timeout(Duration::from_millis(20), peer.recv())
+            .await
+            .is_err()
+    );
+    assert!(events.try_recv().is_err());
+}
+#[tokio::test]
+async fn exact_encoded_frame_boundary_includes_json_expansion_and_envelope() {
+    let (_tx, rx) = mpsc::unbounded_channel();
+    let (out, _events, _task) = reliable(id(), Box::new(Queue(rx)), 8);
+    for unit in ["x", "界", "\0", "\""] {
+        for dispatch in [false, true] {
+            let mut body = if dispatch {
+                Body::Dispatch {
+                    task_id: TaskId::new(),
+                    agent: "fake".into(),
+                    cwd: "/work".into(),
+                    prompt: String::new(),
+                    mode: None,
+                    model: None,
+                    mcp_servers: None,
+                }
+            } else {
+                Body::SendToSession {
+                    task_id: TaskId::new(),
+                    session_id: "s".into(),
+                    prompt: String::new(),
+                    agent: None,
+                }
+            };
+            let base = encoded_envelope_len(&body).unwrap();
+            let unit_bytes = serde_json::to_vec(unit).unwrap().len() - 2;
+            let count = (MAX_FRAME - base) / unit_bytes;
+            let set_prompt = |body: &mut Body, prompt| match body {
+                Body::Dispatch { prompt: p, .. } | Body::SendToSession { prompt: p, .. } => {
+                    *p = prompt
+                }
+                _ => panic!(),
+            };
+            let mut prompt = unit.repeat(count);
+            prompt.push_str(&"x".repeat(MAX_FRAME - base - count * unit_bytes));
+            set_prompt(&mut body, prompt.clone());
+            assert_eq!(encoded_envelope_len(&body).unwrap(), MAX_FRAME);
+            assert!(out.validate(&body).is_ok());
+            prompt.push('x');
+            set_prompt(&mut body, prompt);
+            assert!(
+                matches!(out.send(body), Err(LinkError::Oversized { size, .. }) if size == MAX_FRAME + 1)
+            );
+        }
+    }
+}
 async fn next(rx: &mut mpsc::UnboundedReceiver<ReliableEvent>) -> ReliableEvent {
     tokio::time::timeout(Duration::from_secs(120), rx.recv())
         .await

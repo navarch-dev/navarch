@@ -37,8 +37,8 @@ pub(super) fn tools() -> Vec<Tool> {
         ),
         tool(
             "list_sessions",
-            "Query worker registries and adapters for resumable sessions. Offline or timed-out workers return hub-observed sessions marked stale.",
-            json!({"machine":machine,"cwd":string("Optional worker-local directory filter.")}),
+            "Query worker registries and adapters for resumable sessions. Results are newest first and report truncated and stale. Offline or timed-out workers return hub-observed sessions marked stale.",
+            json!({"machine":machine,"agent":string("Optional adapter name filter."),"cwd":string("Optional worker-local directory filter."),"limit":{"type":"integer","minimum":0,"default":50,"description":"Maximum sessions per worker, capped at 200. Results are newest first and report truncated and stale."}}),
             &[],
         ),
         tool(
