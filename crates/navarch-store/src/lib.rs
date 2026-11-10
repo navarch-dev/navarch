@@ -62,6 +62,10 @@ pub trait Store: Send + Sync {
     }
     /// Read a deliverable unread prefix newer than a cursor; marking affects only that batch.
     fn inbox_after(&self, after_seq: u64, mark_read: bool) -> Result<Vec<InboxEvent>, StoreError>;
+    /// Replay a bounded compact event prefix after a cursor, optionally including read rows.
+    /// Does not change inbox read markers.
+    fn events_after(&self, after_seq: u64, include_read: bool)
+    -> Result<Vec<HubEvent>, StoreError>;
 }
 pub(crate) fn derive_index(cards: &[TaskCard], corrupt: Vec<String>) -> Index {
     Index {

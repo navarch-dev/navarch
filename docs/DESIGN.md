@@ -6,8 +6,8 @@ This document is the source of truth for implementation. If code and this docume
 
 | Role | Process | Count | Responsibility |
 |---|---|---|---|
-| Orchestrator | An agent session (for example Claude Code) | 1 | Understands the user, decides what to dispatch. Not part of this codebase; it reaches Navarch through MCP tools. |
-| Hub | `navarch hub serve` | 1 | Owns all state. Routes messages to workers. Serves the orchestrator's tools. |
+| Orchestrator | An agent session (for example Claude Code) | 1 | Understands the user, decides what to dispatch. Not part of this codebase; it reaches Navarch by running `navarch hub` commands. |
+| Hub | `navarch hub serve` | 1 | Owns all state. Routes messages to workers. Serves the local control API. |
 | Worker | `navarch worker serve` | 1 per machine | Drives agents on its machine through ACP. Enforces local policy. |
 | Relay | `navarch relay serve` | 1, on a public host | Forwards opaque frames between machines by machine ID. |
 
@@ -26,7 +26,7 @@ crates/
   navarch-store      hub state on disk
   navarch-transport  Link trait and its implementations
   navarch-worker     worker runtime
-  navarch-hub        hub runtime and MCP server
+  navarch-hub        hub runtime and control API
   navarch-relay      relay server
   navarch-cli        argument parsing and wiring only
 ```
@@ -37,7 +37,7 @@ Layers, top to bottom: `cli` → `hub`, `worker`, `relay` → `store`, `acp`, `p
 
 1. A crate may depend only on crates in lower layers. Crates in the same layer do not depend on each other, with one exception: `transport` may depend on `crypto`.
 2. `hub`, `worker` and `relay` never depend on each other. They share only `proto` types.
-3. ACP types appear only in `navarch-acp`. MCP types appear only in `navarch-hub`. Neither leaks through public APIs of those crates.
+3. ACP types appear only in `navarch-acp` and never leak through its public API.
 4. `proto`, `crypto` (except key file helpers) and `policy` perform no I/O.
 5. Every crate has `#![forbid(unsafe_code)]`.
 
@@ -203,15 +203,18 @@ All writes are atomic. `navarch-store` exposes a `Store` trait with a file imple
 - A **step** is one turn of one agent session: role, agent, machine, session ID, state, result summary, and its own turn ID. The turn ID is the `task_id` carried on the wire, so turns can be queued and cancelled independently.
 - `dispatch` creates a card with one step, or appends a step to an existing card when given `card_id` (a hand-off to another agent or machine).
 - `send_to_session` appends a step to the card that owns the session's latest step, unless `card_id` says otherwise.
-- A card's state is derived from its steps: `running` if any step is running or queued, `waiting` if a step waits for a permission answer, `failed` if the latest step failed, otherwise `finished`.
+- A card's state is derived from its steps: `running` if any step is running or queued, `waiting` if a step waits for a permission answer, `failed` if the latest step failed, `cancelled` if the latest step was cancelled, otherwise `finished`.
 - The card log holds compact entries (`time`, `kind`, `step`, `summary` of at most 200 characters), never whole envelopes. `get_task` returns the card without the log unless asked.
 - `Progress` summaries are short human-readable text. They never contain debug formatting of protocol types.
 
 ### Runtime
 
 - `navarch hub serve` is a daemon. It holds links to workers, applies their messages to the store, and serves a control API on a Unix socket `hub.sock` (mode 0600), using line-delimited JSON requests and responses.
-- `navarch hub mcp` is a stdio MCP server (official `rmcp` crate) that the orchestrator launches. It translates tool calls to control API requests. It holds no state.
-- Tools: `list_workers`, `list_sessions`, `dispatch`, `send_to_session`, `cancel`, `get_task`, `list_tasks`, `read_inbox`, `wait_for_events`, `answer_permission`, `approve_machine`.
+- Run `navarch hub dispatch`, `send`, `cancel`, `task`, `tasks`, `sessions`, `inbox`, `wait`, `permission`, `status`, `watch` and `machines` against that control API. `init`, `serve` and `guide` provide local setup, startup and guidance.
+- CLI prompts are non-empty and at most 256 KiB; titles are at most 200 characters; worker-session server files are at most 64 KiB. Oversized input is rejected.
+- Dispatch and send responses include `card_id`, `task_id` and `seq`, captured under the event publication lock before sending work. `--wait` uses this cursor to avoid missing instant completion.
+- Task responses expose outstanding `permission_requests` with request ID, turn ID, tool, detail and offered options, without marking inbox entries read. Internal routing/deduplication metadata stays private.
+- **Why not MCP:** one interface serves agents, people and scripts; no per-client registration or protocol negotiation is needed. Background shell commands already wake an agent session when work ends.
 - `list_sessions` asks the worker (`ListSessions`), so it includes sessions started outside Navarch that the adapters can resume. `send_to_session` accepts such a session by agent and adapter session ID; the worker adopts it into its registry on first use, subject to `allowed_roots`.
 - Public keys are serialized as lowercase hex strings everywhere.
 - `dispatch` picks nothing by itself: the orchestrator names the machine, role or agent, cwd and prompt. Choosing is the orchestrator's job; validating is the hub's.
@@ -219,15 +222,16 @@ All writes are atomic. `navarch-store` exposes a `Store` trait with a file imple
 
 ### 8a. Events for the orchestrator
 
-The orchestrator should not have to poll. Every inbox entry has a monotonic `seq` and is also published on an in-process bounded event bus. The store atomically reserves `event-seq` before appending or publishing; a crash may leave a gap, but a restart never reuses a sequence. `worker_online` and `worker_offline` reserve sequences and go only to the bus. Inbox rows retain internal read markers for durable deduplication; clients see only unread rows. Large inbox responses are bounded prefixes that fit the 1 MiB control line limit, and `read_inbox` marks only the returned batch read. `wait_for_events` filters by `after_seq` before selecting that prefix and returns only compact events (`seq`, `kind`, `card_id`, `step`, `machine`, `summary`, `time`), never envelopes. `read_inbox` retains its existing envelope view. Three consumers sit on top of it:
+The orchestrator should not have to poll. Every inbox entry has a monotonic `seq` and is also published on an in-process bounded event bus. The store atomically reserves `event-seq` before appending or publishing; a crash may leave a gap, but a restart never reuses a sequence. `worker_online` and `worker_offline` reserve sequences and go only to the bus. Inbox rows retain internal read markers for durable deduplication. `read_inbox` and subscription replay return unread rows. `wait_for_events` adds an optional `include_read` flag (default `false` for backwards compatibility); when `true`, replay depends only on the sequence cursor, regardless of read markers. Large inbox responses are bounded prefixes that fit the 1 MiB control line limit, and `read_inbox` marks only the returned batch read. `wait_for_events` filters by `after_seq` before selecting that prefix and returns only compact events (`seq`, `kind`, `card_id`, `step`, `machine`, `summary`, `time`), never envelopes. `read_inbox` retains its existing envelope view. Two ways to follow work sit on top of it:
 
 | Consumer | How | For |
 |---|---|---|
-| Channel | `navarch hub mcp --channel` sends the MCP notification `notifications/claude/channel` (`content`, string-only `meta`) | Claude Code sessions started with the channel enabled; the event arrives as a `<channel source="navarch" ...>` block and wakes an idle session |
-| `wait_for_events` | A tool that blocks until an unread entry newer than `after_seq` exists or a timeout elapses | Any MCP client, including ones without channels |
-| `navarch hub watch` | Control API `subscribe`, one JSON line per event | People and scripts |
+| `wait` / `--wait` | Repeated control `wait_for_events` requests with `include_read: true`; card waits stop on finished, failed, rejected or permission requests | Agent sessions and scripts; run long waits as background shell commands |
+| `subscribe` / `navarch hub watch` | One JSON line per unread replay or live event | People and streaming clients |
 
-Events are hints, not the record: the inbox and the task cards stay authoritative, a slow subscriber is told it `lagged` and re-reads the inbox, and nothing is marked read by an event. Each new channel process uses `subscribe_live`: the daemon atomically subscribes and snapshots the latest persisted sequence, returning a `ready` cursor before only newer events. This skips the old unread backlog without losing events during setup. Socket reconnection within that process uses `subscribe` from its last delivered sequence or initial baseline. The backlog remains accessible via `read_inbox` and `wait_for_events`. Channel text for finished, failed, rejected and permission_ask includes the bounded summary and the next-tool hint; it never carries a permission answer, so a channel cannot approve anything.
+Events are hints; the inbox and task cards remain authoritative. Every CLI wait (`wait`, `dispatch --wait`, `send --wait`) includes read entries, so another client reading the inbox cannot hide an outcome. `inbox --peek` uses `include_read: false` and remains unread-only. Readable card outcomes print card ID, task ID, outcome and sequence, then a blank line and the full result or permission block; JSON retains the compact event hints as well. Waits never mark entries read and reconnect with backoff from their last sequence after daemon restart. Requests are reissued after the control API's 1800-second cap until the CLI timeout elapses; timeout 0 has no limit. Exit codes are 0 for success, 1 for usage/unreachable/hub rejection, 3 for failed/rejected/cancelled steps, 4 for permission answers and 124 for timeout (work continues).
+
+A slow subscriber receives `lagged` and re-reads the inbox. `subscribe_live` atomically registers a receiver and snapshots the latest sequence, returning `ready` before only newer events. Reconnect with `subscribe` from the last delivered cursor. This API remains available to streaming clients.
 
 An original worker envelope may nearly fill the wire frame by itself. If its
 inbox wrapper cannot fit a control response, the returned inbox view retains the
@@ -324,9 +328,11 @@ The relay sees the room number and ciphertext. It cannot derive the key.
 |---|---|
 | M0 | Workspace, conventions, CI, `navarch --help`, ACP crate check against a real adapter |
 | M1 | `proto`, `policy`, `acp`, `worker` standalone commands |
-| M2 | `store`, `transport` (`LocalLink`), `hub` daemon, control API, MCP server, worker `serve` |
+| M2 | `store`, `transport` (`LocalLink`), `hub` daemon, control API, worker `serve` |
 | M3 | `crypto`, `relay`, `RelayLink`, pairing, approval, reconnect and resend |
-| M4 | Events for the orchestrator (channel, `wait_for_events`, `hub watch`), `DirectLink`, version, services, release workflow, install script |
+| M4 | Events for the orchestrator (`wait_for_events`, `hub watch`), `DirectLink`, version, services, release workflow, install script |
+
+| M5 | CLI-driven hub, shared completion waits, orchestrator guide; removed the server adapter and notification integration |
 
 Task files are in `docs/tasks/`.
 

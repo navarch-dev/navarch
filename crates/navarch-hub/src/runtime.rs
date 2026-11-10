@@ -143,8 +143,10 @@ impl Hub {
         card.steps.push(step);
         card.derive_state();
         self.store.put_task(card)?;
+        // request holds the publication lock, so no worker event can precede this cursor.
+        let seq = self.store.latest_event_seq()?;
         sender.send(body)?;
-        Ok(json!({"card_id":card_id,"task_id":task_id}))
+        Ok(json!({"card_id":card_id,"task_id":task_id,"seq":seq}))
     }
 }
 

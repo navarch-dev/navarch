@@ -96,6 +96,7 @@ impl Hub {
             Body::PermissionAsk {
                 request_id,
                 tool,
+                detail,
                 options,
                 ..
             } => {
@@ -111,6 +112,8 @@ impl Hub {
                     card.permissions.push(CardPermission {
                         request_id: *request_id,
                         step: task_id,
+                        tool: tool.clone(),
+                        detail: detail.clone(),
                         options: options.clone(),
                         answered: false,
                     });
@@ -251,19 +254,22 @@ impl Hub {
         let receiver = self.events.subscribe();
         Ok((self.store.latest_event_seq()?, receiver))
     }
-    /// Wait for compact unread newer events without marking them read.
+    /// Wait for compact newer events, optionally including read rows, without marking them read.
     pub async fn wait_for_events(
         &self,
         timeout_secs: Option<u64>,
         after_seq: Option<u64>,
+        include_read: bool,
     ) -> Result<Vec<navarch_store::HubEvent>, HubError> {
         let mut events = self.events.subscribe();
         let deadline = tokio::time::Instant::now()
             + std::time::Duration::from_secs(timeout_secs.unwrap_or(300).min(1800));
         loop {
-            let unread = self.store.inbox_after(after_seq.unwrap_or(0), false)?;
-            if !unread.is_empty() {
-                return Ok(unread.into_iter().map(|entry| entry.event).collect());
+            let replay = self
+                .store
+                .events_after(after_seq.unwrap_or(0), include_read)?;
+            if !replay.is_empty() {
+                return Ok(replay);
             }
             match tokio::time::timeout_at(deadline, events.recv()).await {
                 Err(_) => return Ok(vec![]),
@@ -323,7 +329,8 @@ mod tests {
     async fn wait_returns_early_and_times_out_without_marking_read() {
         let hub = Hub::new(Arc::new(MemoryStore::default()));
         let h = hub.clone();
-        let wait = tokio::spawn(async move { h.wait_for_events(None, Some(0)).await.unwrap() });
+        let wait =
+            tokio::spawn(async move { h.wait_for_events(None, Some(0), false).await.unwrap() });
         tokio::task::yield_now().await;
         tokio::time::advance(std::time::Duration::from_secs(5)).await;
         hub.publish_inbox(event(0)).unwrap();
@@ -331,12 +338,39 @@ mod tests {
         assert_eq!(hub.store.inbox(false).unwrap().len(), 1);
         let before = tokio::time::Instant::now();
         assert!(
-            hub.wait_for_events(Some(2000), Some(1))
+            hub.wait_for_events(Some(2000), Some(1), false)
                 .await
                 .unwrap()
                 .is_empty()
         );
         assert_eq!(before.elapsed(), std::time::Duration::from_secs(1800));
+    }
+    #[tokio::test]
+    async fn wait_include_read_replays_by_cursor_and_defaults_to_unread_only() {
+        use crate::control::Request;
+        let hub = Hub::new(Arc::new(MemoryStore::default()));
+        hub.publish_inbox(event(0)).unwrap();
+        hub.publish_inbox(event(0)).unwrap();
+        let read = hub.store.inbox(true).unwrap();
+        // Legacy clients omit include_read and retain unread-only semantics.
+        let legacy: Request = serde_json::from_value(serde_json::json!({
+            "type":"wait_for_events", "timeout_secs":0, "after_seq":0
+        }))
+        .unwrap();
+        assert_eq!(
+            hub.request_async(legacy).await.unwrap(),
+            serde_json::json!([])
+        );
+        let replay = hub
+            .request_async(Request::WaitForEvents {
+                timeout_secs: Some(0),
+                after_seq: Some(read[0].event.seq),
+                include_read: true,
+            })
+            .await
+            .unwrap();
+        assert_eq!(replay, serde_json::json!([read[1].event]));
+        assert!(hub.store.inbox(false).unwrap().is_empty());
     }
     #[tokio::test]
     async fn apply_worker_envelope_twice_publishes_one_bounded_hint() {
@@ -404,6 +438,7 @@ mod tests {
             .request_async(crate::control::Request::WaitForEvents {
                 timeout_secs: Some(0),
                 after_seq: None,
+                include_read: false,
             })
             .await
             .unwrap();

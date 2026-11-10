@@ -323,6 +323,7 @@ mod event_tests {
                 Request::WaitForEvents {
                     timeout_secs: Some(0),
                     after_seq: None,
+                    include_read: false,
                 },
                 false,
             ),

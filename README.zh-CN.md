@@ -12,7 +12,7 @@ Navarch 让一个总控会话把工作派给你任意一台机器上的编码 Ag
 
 **0.1.0 开发版本。接口和文件格式仍可能调整，加密设计尚未经过独立安全审计。**
 
-目前已有：同一个程序里的 Hub、Worker 和中继；一次性配对码配对；加密中继与可选直连；每台 Worker 的本地权限策略；通过 MCP 提供的 Hub 工具与完成事件；发布打包和用户级服务安装工具。使用方法见 [docs/](docs/)：[Worker](docs/worker.md)、[Hub](docs/hub.md)、[中继](docs/relay.md)、[安全](docs/security.md)、[设计](docs/DESIGN.md)（文档为英文）。
+目前已有：同一个程序里的 Hub、Worker 和中继；一次性配对码配对；加密中继与可选直连；每台 Worker 的本地权限策略；面向 Agent、用户和脚本的 Hub 命令与完成等待；发布打包和用户级服务安装工具。使用方法见 [docs/](docs/)：[Worker](docs/worker.md)、[Hub](docs/hub.md)、[中继](docs/relay.md)、[安全](docs/security.md)、[设计](docs/DESIGN.md)（文档为英文）。
 
 发布包、源码构建、服务、升级与卸载方法见[安装说明](docs/install.md)。
 
@@ -34,11 +34,11 @@ navarch hub serve
 navarch worker serve
 # 在另一终端中：
 navarch hub status
-claude mcp add --transport stdio navarch -- navarch hub mcp
+navarch hub dispatch --machine MACHINE --agent AGENT --cwd /absolute/repo --wait 'Describe the test setup'
 ```
 
-通过 [Hub 设置](docs/hub.md)启用完成通知频道、`wait_for_events` 或
-`navarch hub watch`。需要后台运行时，先用
+通过 [Hub 设置](docs/hub.md)了解 `--wait`、后台 `navarch hub wait` 和
+`navarch hub watch`；让 Agent 会话运行 `navarch hub guide` 即可获取操作说明。需要后台运行时，先用
 `navarch service install hub --dry-run` 预览，再安装 Hub 与 Worker 服务。
 
 ## 解决什么问题
@@ -73,7 +73,7 @@ claude mcp add --transport stdio navarch -- navarch hub mcp
 
 | 组件 | 跑在哪 | 做什么 |
 |---|---|---|
-| `navarch hub` | 总控会话所在的机器 | 保存全部状态；向总控提供工具：列出机器、派活、给已有会话追加、取消 |
+| `navarch hub` | 总控会话所在的机器 | 保存全部状态；向总控提供命令：列出机器、派活、给已有会话追加、取消 |
 | `navarch worker` | 每台干活的机器 | 主动往外连；通过 ACP 新建、续接、打断 Agent 会话；上报本机能做什么 |
 | `navarch relay` | 任意一台有公网地址的主机 | 按机器 ID 转发加密消息；看不到内容，不落盘 |
 
@@ -112,8 +112,8 @@ Navarch 的本质是让另一台机器替你执行工作，请按这个性质对
 
 - [x] 单机：Hub 加一个本机 Worker，通过 ACP 驱动 Agent
 - [x] 中继、配对与端到端加密
-- [x] 提供给总控的 Hub 工具
-- [x] 任务完成时主动通知总控
+- [x] 提供给总控的 Hub 命令与操作指南
+- [x] 可作为后台 Shell 命令运行的完成等待
 - [x] 同一局域网内直连
 - [x] 打包、安装脚本、用户级服务
 - [ ] 独立的安全评审

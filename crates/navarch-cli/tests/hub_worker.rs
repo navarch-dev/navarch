@@ -48,7 +48,9 @@ async fn dispatch_followup_cancel_permission_inbox_cards_and_index() {
             .any(|e| e.id == card.id)
     );
     f.hub.request(Request::Cancel { task_id: cancel }).unwrap();
-    f.card(cancel, "finished").await;
+    let cancelled = f.card(cancel, "cancelled").await;
+    assert_eq!(cancelled.steps[2].state, "cancelled");
+    assert!(f.store.index().unwrap().tasks.is_empty());
     let permission = f.follow(session);
     let card = f.card(permission, "waiting").await;
     assert_eq!(f.store.index().unwrap().tasks[0].state, "waiting");

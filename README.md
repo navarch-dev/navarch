@@ -12,7 +12,7 @@ Navarch lets a single orchestrator session dispatch work to coding agents (Claud
 
 **0.1.0 development release. Interfaces and file formats can still change. The cryptography has not had an independent security audit.**
 
-What exists today: a hub, a worker and a relay in one binary; pairing with a one-time code; encrypted relay and optional direct links; local policy on every worker; hub tools and completion events exposed over MCP; release and service installation tooling. See [docs/](docs/) for setup: [worker](docs/worker.md), [hub](docs/hub.md), [relay](docs/relay.md), [security](docs/security.md), [design](docs/DESIGN.md).
+What exists today: a hub, a worker and a relay in one binary; pairing with a one-time code; encrypted relay and optional direct links; local policy on every worker; hub commands and completion waits for agents, people and scripts; release and service installation tooling. See [docs/](docs/) for setup: [worker](docs/worker.md), [hub](docs/hub.md), [relay](docs/relay.md), [security](docs/security.md), [design](docs/DESIGN.md).
 
 See [installation](docs/install.md) for release archives, source builds, services, upgrades, and uninstalling.
 
@@ -34,11 +34,11 @@ navarch hub serve
 navarch worker serve
 # In another terminal:
 navarch hub status
-claude mcp add --transport stdio navarch -- navarch hub mcp
+navarch hub dispatch --machine MACHINE --agent AGENT --cwd /absolute/repo --wait 'Describe the test setup'
 ```
 
-Use [hub setup](docs/hub.md) to enable completion channels, `wait_for_events`, or
-`navarch hub watch`. For background operation, preview
+Use [hub setup](docs/hub.md) for `--wait`, background `navarch hub wait`, and
+`navarch hub watch`. Give agent sessions the pointer `navarch hub guide`. For background operation, preview
 `navarch service install hub --dry-run` before installing hub and worker services.
 
 ## What it is for
@@ -73,7 +73,7 @@ With Navarch you talk to one orchestrator. It works out which project and task y
 
 | Component | Runs on | Job |
 |---|---|---|
-| `navarch hub` | The machine your orchestrator session runs on | Keeps all state. Exposes tools to the orchestrator: list workers, dispatch, send to a session, cancel. |
+| `navarch hub` | The machine your orchestrator session runs on | Keeps all state. Exposes commands to the orchestrator: list workers, dispatch, send to a session, cancel. |
 | `navarch worker` | Every machine that does work | Connects outward. Starts, resumes and cancels agent sessions through ACP. Reports what the machine can do. |
 | `navarch relay` | Any host with a public address | Forwards encrypted messages by machine ID. Never sees content, keeps nothing on disk. |
 
@@ -112,8 +112,8 @@ The threat model is in [docs/security.md](docs/security.md). The cryptographic d
 
 - [x] Single machine: hub plus a local worker driving agents over ACP
 - [x] Relay, pairing and end-to-end encryption
-- [x] Hub tools for the orchestrator
-- [x] Push notifications to the orchestrator when a turn finishes
+- [x] Hub commands and an orchestrator guide
+- [x] Completion waits that can run as background shell commands
 - [x] Direct connections on the same local network
 - [x] Packaging, install script, per-user services
 - [ ] Independent security review

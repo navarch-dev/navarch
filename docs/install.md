@@ -59,7 +59,7 @@ navarch hub serve
 navarch worker serve
 # In another terminal:
 navarch hub status
-claude mcp add --transport stdio navarch -- navarch hub mcp
+navarch hub guide
 ```
 
 Both configuration commands preserve existing files. The worker starts with no

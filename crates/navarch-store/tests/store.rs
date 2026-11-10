@@ -205,7 +205,7 @@ fn memory_concurrent_writers() {
 }
 
 #[test]
-fn card_state_is_derived_with_running_waiting_and_latest_failure_precedence() {
+fn card_state_is_derived_with_running_waiting_and_latest_terminal_precedence() {
     let mut c = card();
     let mut next = c.steps[0].clone();
     next.task_id = TaskId::new();
@@ -221,11 +221,11 @@ fn card_state_is_derived_with_running_waiting_and_latest_failure_precedence() {
     assert_eq!(c.state, "failed");
     c.steps[1].state = "cancelled".into();
     c.derive_state();
-    assert_eq!(c.state, "finished");
+    assert_eq!(c.state, "cancelled");
     let store = MemoryStore::default();
     c.state = "wrong".into();
     store.put_task(c.clone()).unwrap();
-    assert_eq!(store.task(c.id).unwrap().unwrap().state, "finished");
+    assert_eq!(store.task(c.id).unwrap().unwrap().state, "cancelled");
 }
 #[test]
 fn legacy_cards_are_preserved_and_ignored_without_hiding_current_cards() {
@@ -319,6 +319,12 @@ fn event_sequences_survive_reads_reopen_and_legacy_migration() {
     drop(store);
     let store = FileStore::open(temp.path()).unwrap();
     assert!(store.inbox(false).unwrap().is_empty());
+    assert_eq!(
+        store.events_after(0, true).unwrap(),
+        vec![legacy[0].event.clone()]
+    );
+    assert!(store.events_after(0, false).unwrap().is_empty());
+    assert!(store.events_after(1, true).unwrap().is_empty());
     let event = store
         .append_inbox(InboxEvent::worker(
             navarch_proto::Envelope {
@@ -333,6 +339,67 @@ fn event_sequences_survive_reads_reopen_and_legacy_migration() {
         .unwrap()
         .unwrap();
     assert_eq!(event.event.seq, 3);
+}
+
+#[test]
+fn event_replay_includes_read_rows_without_changing_unread_batches() {
+    let temp = tempfile::tempdir().unwrap();
+    for store in [
+        &MemoryStore::default() as &dyn Store,
+        &FileStore::open(temp.path()).unwrap() as &dyn Store,
+    ] {
+        let mut events = Vec::new();
+        for _ in 0..3 {
+            events.push(
+                store
+                    .append_inbox(InboxEvent::worker(
+                        Envelope {
+                            v: 1,
+                            id: uuid::Uuid::new_v4(),
+                            from: data_id(0),
+                            to: data_id(1),
+                            body: Body::Failed {
+                                task_id: TaskId::new(),
+                                error: "failed".into(),
+                            },
+                        },
+                        None,
+                        "failed",
+                        "failed",
+                        0,
+                    ))
+                    .unwrap()
+                    .unwrap(),
+            );
+        }
+        assert_eq!(
+            store.inbox_after(events[0].event.seq, true).unwrap(),
+            events[1..]
+        );
+        assert_eq!(
+            store.events_after(events[0].event.seq, true).unwrap(),
+            events[1..]
+                .iter()
+                .map(|e| e.event.clone())
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            store
+                .events_after(events[0].event.seq, false)
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(store.inbox(false).unwrap(), events[..1]);
+        assert_eq!(store.events_after(0, true).unwrap().len(), 3);
+        assert_eq!(store.inbox(true).unwrap(), events[..1]);
+        assert!(store.inbox(false).unwrap().is_empty());
+        assert!(
+            store
+                .events_after(events[2].event.seq, true)
+                .unwrap()
+                .is_empty()
+        );
+    }
 }
 
 #[test]
