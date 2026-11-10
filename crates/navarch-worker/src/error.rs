@@ -2,6 +2,9 @@ use std::path::PathBuf;
 /// Worker configuration, persistence or execution failure.
 #[derive(Debug, thiserror::Error)]
 pub enum WorkerError {
+    /// Hub link failed.
+    #[error(transparent)]
+    Transport(#[from] navarch_transport::LinkError),
     /// A file could not be loaded, parsed or written.
     #[error("{}: {detail}", path.display())]
     File {
@@ -11,7 +14,7 @@ pub enum WorkerError {
         detail: String,
     },
     /// Local policy refusal.
-    #[error("{0}")]
+    #[error(transparent)]
     Policy(#[from] navarch_policy::PolicyError),
     /// Agent failure.
     #[error("{0}")]

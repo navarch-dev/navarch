@@ -11,6 +11,13 @@ name = "navarch"
 path = "src/main.rs"
 
 [dependencies]
+tracing.workspace = true
+tracing-subscriber.workspace = true
+navarch-hub.workspace = true
+navarch-store.workspace = true
+navarch-transport.workspace = true
+navarch-crypto.workspace = true
+
 anyhow.workspace = true
 clap.workspace = true
 navarch-worker.workspace = true
@@ -25,6 +32,7 @@ async-trait.workspace = true
 rustix.workspace = true
 
 [dev-dependencies]
+navarch-acp = { workspace = true, features = ["testing"] }
 tempfile.workspace = true
 
 [lints]

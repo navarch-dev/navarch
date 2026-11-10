@@ -6,5 +6,22 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[dependencies]
+async-trait.workspace = true
+navarch-proto.workspace = true
+navarch-store.workspace = true
+navarch-transport.workspace = true
+navarch-crypto.workspace = true
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+uuid.workspace = true
+rmcp.workspace = true
+tempfile.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
 [lints]
 workspace = true

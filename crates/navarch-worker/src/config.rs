@@ -55,7 +55,7 @@ fn executable(path: &Path) -> bool {
         metadata.is_file()
     }
 }
-/// Standalone worker settings. Hub link settings belong to M2.
+/// Local worker settings. The local hub socket is resolved from NAVARCH_HOME.
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {

@@ -12,6 +12,8 @@ use std::{
 /// Standalone worker commands.
 #[derive(Subcommand)]
 pub enum WorkerCommand {
+    /// Serve this worker over the local hub link, reconnecting after restarts.
+    Serve,
     /// Start a new session and stream one turn.
     Run {
         /// Configured agent name.
@@ -95,14 +97,28 @@ pub async fn run(command: WorkerCommand) -> Result<u8> {
     }
     let user_home =
         std::env::home_dir().context("cannot resolve user home for policy expansion")?;
-    let (worker, streams) = Worker::load(
-        &home,
-        &user_home,
+    let escalation = if matches!(command, WorkerCommand::Serve) {
+        None
+    } else {
         Some(Arc::new(TerminalEscalation {
             input: tokio::sync::Mutex::new(()),
-        })),
-    )?;
+        }) as Arc<dyn EscalationHandler>)
+    };
+    let (worker, streams) = Worker::load(&home, &user_home, escalation)?;
     match command {
+        WorkerCommand::Serve => {
+            let identity = navarch_crypto::Identity::load_or_create(&home)?;
+            let config = navarch_worker::config::Config::load(&home)?;
+            let connector = navarch_transport::LocalConnector {
+                path: home.join("hub-worker.sock"),
+                hello: navarch_transport::LocalHello {
+                    public_key: identity.public_key(),
+                    display_name: config.display_name,
+                },
+            };
+            tokio::select! {result = navarch_worker::serve(worker, streams, identity.machine_id().parse()?, Box::new(connector)) => result?, result = tokio::signal::ctrl_c() => result?}
+            Ok(0)
+        }
         WorkerCommand::Run {
             agent,
             cwd,

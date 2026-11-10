@@ -6,4 +6,7 @@ pub mod home;
 
 pub mod worker;
 
+/// Hub CLI wiring.
+pub mod hub;
+
 mod terminal;

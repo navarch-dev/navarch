@@ -20,7 +20,10 @@ struct Cli {
 #[derive(Subcommand)]
 enum Command {
     /// Run the hub.
-    Hub,
+    Hub {
+        #[command(subcommand)]
+        command: navarch_cli::hub::HubCommand,
+    },
     /// Run a worker.
     Worker {
         #[command(subcommand)]
@@ -36,8 +39,19 @@ enum Command {
 
 #[tokio::main]
 async fn main() -> ExitCode {
+    tracing_subscriber::fmt()
+        .with_writer(std::io::stderr)
+        .with_max_level(tracing::Level::WARN)
+        .init();
     let cli = Cli::parse();
     match cli.command {
+        Command::Hub { command } => match navarch_cli::hub::run(command).await {
+            Ok(code) => ExitCode::from(code),
+            Err(error) => {
+                eprintln!("{error:#}");
+                ExitCode::from(1)
+            }
+        },
         Command::Worker { command } => match navarch_cli::worker::run(command).await {
             Ok(code) => ExitCode::from(code),
             Err(error) => {
