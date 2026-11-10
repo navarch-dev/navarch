@@ -83,6 +83,7 @@ Hub to worker:
 | `Cancel` | `task_id` | Cancel the running turn. |
 | `PermissionAnswer` | `request_id`, `decision` | Answer an escalated permission request. |
 | `Probe` | none | Ask for a capability report. |
+| `ListSessions` | `request_id`, `cwd?` | Ask for the sessions this worker can resume. |
 | `Ack` | `of` | Acknowledge a worker message. |
 
 Worker to hub:
@@ -96,6 +97,7 @@ Worker to hub:
 | `Finished` | `task_id`, `session_id`, `stop_reason`, `result` | Turn ended. `result` is the agent's final message, truncated to 64 KiB. |
 | `Failed` | `task_id`, `error` | Turn could not complete. |
 | `ProbeReport` | `capabilities` | OS, arch, agents with versions and available models, repositories, load. |
+| `SessionList` | `request_id`, `sessions` | Registry sessions plus sessions the adapters report (`session/list`), each with agent, adapter session ID, cwd, title, updated time and whether Navarch started it. |
 | `Ack` | `of` | Acknowledge a hub message. |
 
 Rules:
@@ -184,17 +186,29 @@ Standalone commands (no hub required): `navarch worker run`, `send`, `sessions`,
 | `projects.toml` | TOML | Project names, aliases, repository names. User-edited. |
 | `routes.toml` | TOML | Task kind to role. User-edited. |
 | `roles/<name>.md` | Markdown with TOML front matter | Agent, model, mode, preferences. User-edited. |
-| `tasks/<task_id>.toml` | TOML | Task card: title, project, state, steps (role, machine, session, state, result summary), log. |
+| `tasks/<card_id>.toml` | TOML | Task card: title, project, state, steps, log. See "Cards and turns". |
 | `tasks/index.toml` | TOML | One entry per active task. Derived from cards; rebuilt on demand. |
 | `inbox.jsonl` | JSON lines | Worker events not yet read by the orchestrator. |
 
 All writes are atomic. `navarch-store` exposes a `Store` trait with a file implementation and an in-memory one for tests.
+
+### Cards and turns
+
+- A **card** is one piece of work as the user thinks of it. It has a `CardId` and an ordered list of **steps**.
+- A **step** is one turn of one agent session: role, agent, machine, session ID, state, result summary, and its own turn ID. The turn ID is the `task_id` carried on the wire, so turns can be queued and cancelled independently.
+- `dispatch` creates a card with one step, or appends a step to an existing card when given `card_id` (a hand-off to another agent or machine).
+- `send_to_session` appends a step to the card that owns the session's latest step, unless `card_id` says otherwise.
+- A card's state is derived from its steps: `running` if any step is running or queued, `waiting` if a step waits for a permission answer, `failed` if the latest step failed, otherwise `finished`.
+- The card log holds compact entries (`time`, `kind`, `step`, `summary` of at most 200 characters), never whole envelopes. `get_task` returns the card without the log unless asked.
+- `Progress` summaries are short human-readable text. They never contain debug formatting of protocol types.
 
 ### Runtime
 
 - `navarch hub serve` is a daemon. It holds links to workers, applies their messages to the store, and serves a control API on a Unix socket `hub.sock` (mode 0600), using line-delimited JSON requests and responses.
 - `navarch hub mcp` is a stdio MCP server (official `rmcp` crate) that the orchestrator launches. It translates tool calls to control API requests. It holds no state.
 - Tools: `list_workers`, `list_sessions`, `dispatch`, `send_to_session`, `cancel`, `get_task`, `list_tasks`, `read_inbox`, `answer_permission`, `approve_machine`.
+- `list_sessions` asks the worker (`ListSessions`), so it includes sessions started outside Navarch that the adapters can resume. `send_to_session` accepts such a session by agent and adapter session ID; the worker adopts it into its registry on first use, subject to `allowed_roots`.
+- Public keys are serialized as lowercase hex strings everywhere.
 - `dispatch` picks nothing by itself: the orchestrator names the machine, role or agent, cwd and prompt. Choosing is the orchestrator's job; validating is the hub's.
 - Worker events (`Finished`, `Failed`, `PermissionAsk`, `Rejected`) update the task card and append to the inbox. `read_inbox` returns and marks them read.
 
