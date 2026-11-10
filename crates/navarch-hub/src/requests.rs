@@ -283,7 +283,24 @@ impl Hub {
 fn clean_card(value: &mut Value, include_log: bool) {
     if let Some(object) = value.as_object_mut() {
         object.remove("applied_events");
-        object.remove("permissions");
+        if let Some(Value::Array(permissions)) = object.remove("permissions") {
+            let requests: Vec<_> = permissions
+                .into_iter()
+                .filter(|p| p["answered"] == false)
+                .filter(|p| {
+                    object["steps"].as_array().is_some_and(|steps| {
+                        steps
+                            .iter()
+                            .any(|s| s["task_id"] == p["step"] && s["state"] == "waiting")
+                    })
+                })
+                .map(|p| {
+                    json!({"request_id":p["request_id"],"task_id":p["step"],
+                    "tool":p["tool"],"detail":p["detail"],"options":p["options"]})
+                })
+                .collect();
+            object.insert("permission_requests".into(), json!(requests));
+        }
         if !include_log {
             object.remove("log");
         }

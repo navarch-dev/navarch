@@ -285,6 +285,23 @@ impl Store for FileStore {
             .parse()
             .map_err(StoreError::from)
     }
+    fn events_after(
+        &self,
+        after_seq: u64,
+        include_read: bool,
+    ) -> Result<Vec<HubEvent>, StoreError> {
+        let _g = self.guard()?;
+        let events = self.read_inbox()?;
+        let batch = inbox_batch(
+            events
+                .iter()
+                .filter(|e| (include_read || !e.read) && e.event.event.seq > after_seq)
+                .map(|e| e.event.clone()),
+        )?;
+        // Persist sequences assigned when migrating legacy inbox rows.
+        self.write_inbox(&events)?;
+        Ok(batch.into_iter().map(|entry| entry.event).collect())
+    }
     fn inbox_after(&self, after_seq: u64, mark_read: bool) -> Result<Vec<InboxEvent>, StoreError> {
         let _g = self.guard()?;
         let mut events = self.read_inbox()?;

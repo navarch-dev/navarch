@@ -1,4 +1,4 @@
-//! MCP-independent, line-delimited JSON control protocol.
+//! The hub control API, using line-delimited JSON.
 use crate::HubError;
 use navarch_proto::{CardId, MachineId, McpServer, PermissionDecision, TaskId};
 use serde::{Deserialize, Serialize};
@@ -8,7 +8,7 @@ use tokio::{
     net::UnixStream,
 };
 use uuid::Uuid;
-/// Exactly one request per orchestrator tool. Unknown fields remain forward compatible.
+/// Hub control operations. Unknown fields remain forward compatible.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Request {
@@ -79,7 +79,7 @@ pub enum Request {
     },
     /// Read task cards, optionally including terminal states.
     ListTasks {
-        /// Include finished and failed cards.
+        /// Include finished, failed and cancelled cards.
         #[serde(default)]
         include_finished: bool,
     },
@@ -92,12 +92,15 @@ pub enum Request {
     },
     /// Subscribe only to future events; first line is {kind: "ready", seq: latest}.
     SubscribeLive,
-    /// Wait for compact unread events (no envelopes), returning early when one arrives; never marks read.
+    /// Wait for compact events (no envelopes), returning early when one arrives; never marks read.
     WaitForEvents {
         /// Default 300 seconds, capped at 1800.
         timeout_secs: Option<u64>,
         /// Only return entries newer than this cursor.
         after_seq: Option<u64>,
+        /// Include entries already read by an inbox client; defaults to false.
+        #[serde(default)]
+        include_read: bool,
     },
     /// Answer an outstanding permission with an offered choice or cancellation.
     AnswerPermission {
@@ -126,9 +129,9 @@ pub enum Request {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum Response {
-    /// Successful tool result.
+    /// Successful control result.
     Ok {
-        /// Tool-specific JSON result, using only Navarch records.
+        /// Operation-specific JSON result, using only Navarch records.
         value: serde_json::Value,
     },
     /// Validation or daemon failure readable by the orchestrator.
@@ -139,13 +142,7 @@ pub enum Response {
 }
 /// Send one control request to a daemon. No state is retained by this client.
 pub async fn call(path: &Path, request: &Request) -> Result<serde_json::Value, HubError> {
-    navarch_transport::validate_socket_path(path)?;
-    let stream = UnixStream::connect(path).await.map_err(|e| {
-        HubError::Invalid(format!(
-            "cannot connect to hub daemon at {}: {e}; start `navarch hub serve`",
-            path.display()
-        ))
-    })?;
+    let stream = connect(path).await?;
     let (read, mut write) = stream.into_split();
     let mut bytes = serde_json::to_vec(request)?;
     bytes.push(b'\n');
@@ -158,7 +155,7 @@ pub async fn call(path: &Path, request: &Request) -> Result<serde_json::Value, H
     let mut reader = BufReader::new(read);
     let line = read_line(&mut reader)
         .await?
-        .ok_or_else(|| HubError::Invalid("hub closed before responding".into()))?;
+        .ok_or_else(|| HubError::Unavailable("hub daemon disconnected; start `navarch hub serve` or use `navarch service install hub`".into()))?;
     match serde_json::from_slice(&line)? {
         Response::Ok { value } => Ok(value),
         Response::Error { message } => Err(HubError::Invalid(message)),
@@ -175,7 +172,9 @@ pub(crate) async fn read_line<R: tokio::io::AsyncBufRead + Unpin>(
             return if line.is_empty() {
                 Ok(None)
             } else {
-                Err(HubError::Invalid("incomplete control JSON line".into()))
+                Err(HubError::Unavailable(
+                    "hub daemon disconnected during control JSON line".into(),
+                ))
             };
         }
         let end = buffer.iter().position(|b| *b == b'\n').map(|i| i + 1);
@@ -220,8 +219,7 @@ impl Subscription {
 }
 /// Subscribe to a daemon's replay and live stream on a dedicated socket.
 pub async fn subscribe(path: &Path, after_seq: Option<u64>) -> Result<Subscription, HubError> {
-    navarch_transport::validate_socket_path(path)?;
-    let stream = UnixStream::connect(path).await?;
+    let stream = connect(path).await?;
     let (read, mut write) = stream.into_split();
     let mut bytes = serde_json::to_vec(&Request::Subscribe { after_seq })?;
     bytes.push(b'\n');
@@ -234,8 +232,7 @@ pub async fn subscribe(path: &Path, after_seq: Option<u64>) -> Result<Subscripti
 /// Atomically establish a live-only stream and learn its starting cursor.
 /// Reconnect with `subscribe(path, Some(cursor))` after this succeeds.
 pub async fn subscribe_live(path: &Path) -> Result<(u64, Subscription), HubError> {
-    navarch_transport::validate_socket_path(path)?;
-    let stream = UnixStream::connect(path).await?;
+    let stream = connect(path).await?;
     let (read, mut write) = stream.into_split();
     write.write_all(b"{\"type\":\"subscribe_live\"}\n").await?;
     let mut reader = BufReader::new(read);
@@ -248,4 +245,10 @@ pub async fn subscribe_live(path: &Path) -> Result<(u64, Subscription), HubError
         .filter(|_| ready["kind"] == "ready")
         .ok_or_else(|| HubError::Invalid("expected subscription ready cursor".into()))?;
     Ok((seq, Subscription { reader }))
+}
+
+async fn connect(path: &Path) -> Result<UnixStream, HubError> {
+    navarch_transport::validate_socket_path(path)?;
+    UnixStream::connect(path).await.map_err(|error| HubError::Unavailable(format!(
+        "hub daemon is not running or is unreachable at {}: {error}; start `navarch hub serve` or install it with `navarch service install hub`", path.display())))
 }

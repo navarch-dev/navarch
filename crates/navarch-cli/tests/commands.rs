@@ -50,8 +50,9 @@ fn outside_allowed_roots_prints_error_once() {
 fn hub_commands_parse_and_missing_daemon_is_clear() {
     let commands: &[&[&str]] = &[
         &["serve", "--help"],
-        &["mcp", "--help"],
-        &["mcp", "--channel", "--help"],
+        &["dispatch", "--help"],
+        &["wait", "--help"],
+        &["guide", "--help"],
         &["watch", "--help"],
         &["watch", "--json", "--help"],
         &["status", "--help"],

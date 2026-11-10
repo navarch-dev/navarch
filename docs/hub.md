@@ -1,9 +1,9 @@
-# Local hub (M2)
+# Hub
 
-Navarch M2 runs a hub and one worker on a Unix machine. The hub owns task cards,
-configuration and unread events; the worker uses the same runtime as the
-standalone commands and enforces its own policy. No relay, pairing or encrypted
-remote connection is enabled in M2.
+Run the hub and a local worker on a Unix machine, then pair remote workers as
+needed. The hub owns task cards, configuration and unread events; each worker
+uses the same runtime as the standalone commands and enforces its own policy.
+Drive the hub through `navarch hub` commands backed by its local control API.
 
 ## Start on one machine
 
@@ -53,7 +53,7 @@ control results. Task listings contain card summaries without logs.
 
 On first local connection the worker is recorded as active, with its display name
 and public key. Public keys are lowercase 64-character hex strings in machine
-files, control results, MCP output and local introductions. Legacy byte-array keys
+files, control results and local introductions. Legacy byte-array keys
 are still accepted when reading. Hub and local worker may share the same machine identity.
 `identity.key` contains 32 Ed25519 secret bytes and has mode 0600. The machine ID
 is lowercase unpadded base32 of the first 16 bytes of BLAKE2s-256 of the public
@@ -81,50 +81,56 @@ remembers the most recent 4096 received envelope IDs per peer; it does not promi
 message ordering. The hub handles late Accepted/Progress events without reverting
 a terminal state.
 
-## Register MCP in Claude Code
+## Driving the hub from an agent session
 
-Start the hub and worker first. Replace the binary path and state directory with
-absolute paths:
+Add this line to your project's `CLAUDE.md` or `AGENTS.md`:
 
-```sh
-claude mcp add --transport stdio --scope user \
-  --env NAVARCH_HOME=/absolute/path/to/navarch-state \
-  navarch -- /absolute/path/to/navarch hub mcp
+```text
+To run work on other machines, run "navarch hub guide" and follow it.
 ```
 
-See [Claude Code's stdio MCP registration documentation](https://code.claude.com/docs/en/mcp#option-3-add-a-local-stdio-server)
-for registration scopes. Check `/mcp` in Claude Code. `hub mcp` uses the official
-[`rmcp` SDK](https://github.com/modelcontextprotocol/rust-sdk) and holds no hub
-state. It translates tools to control requests. The MCP process stays alive when the daemon is absent; tool calls report the
-socket path and ask you to run `navarch hub serve`. A channel subscription
-reconnects automatically. Stdout carries only MCP traffic.
+Or install a skill with this ready-to-copy `SKILL.md`:
 
-No real adapter or Claude Code session is needed by the automated tests. The
-reviewer acceptance check is to dispatch a small task through MCP and then send a
-follow-up to its session using an authenticated adapter.
+```markdown
+---
+name: navarch
+description: Dispatch coding work to other machines and agents, continue sessions, wait for results, cancel work, and answer Navarch hub permissions.
+---
+Run `navarch hub guide` and follow its instructions to drive the local hub.
+```
 
-## Tools and example arguments
+Read [the orchestrator guide](orchestrator.md), also printed by `navarch hub guide`.
+Use `--json` whenever parsing output; each finite command emits one JSON document
+on stdout. Errors go to stderr. A missing daemon error names `navarch hub serve`
+and `navarch service install hub`.
 
-The MCP tool name is shown before each JSON argument object. Replace `MACHINE`
-with an ID returned by `list_workers`, `TURN_UUID` with a returned `task_id`,
-`CARD_UUID` with a returned `card_id`, `SESSION` with a worker session ID, and
-`REQUEST_UUID` with a permission request UUID. These examples are reference calls, not commands to run as a shell script.
+```sh
+navarch hub status
+navarch hub dispatch --machine MACHINE --agent codex --cwd /absolute/repo --wait 'Describe the test setup'
+navarch hub task CARD --log
+navarch hub send CARD --wait 'Now explain the main entry point'
+navarch hub sessions --machine MACHINE --agent codex --limit 50 --json
+navarch hub cancel CARD
+navarch hub cancel --task TURN
+navarch hub inbox --peek --json
+navarch hub inbox --json
+navarch hub permission REQUEST --choose OPTION
+navarch hub permission REQUEST --cancel
+```
 
-| Tool | Behavior | Example arguments |
-|---|---|---|
-| `list_workers` | Known machines, approval/online state and last capabilities. | `{}` |
-| `list_sessions` | Query worker registries and adapters, newest first; filter by machine, agent and cwd. Limit defaults to 50 per worker and is capped at 200. Reports `truncated` and `stale`; a timeout (10 seconds) or offline worker uses hub-observed sessions. | `{"machine":"MACHINE","agent":"codex","cwd":"/absolute/repo","limit":50}` |
-| `dispatch` | Create a card and turn on an explicit machine; returns `card_id` and `task_id`. Pass `card_id` to append a hand-off step. Supply exactly one of `agent` or `role`. | `{"machine":"MACHINE","agent":"codex","cwd":"/absolute/path/to/repo","prompt":"Describe the test setup","title":"Inspect tests"}` |
-| `send_to_session` | Append to the session’s latest owning card; optional `card_id` overrides it. Returns `card_id` and a new turn `task_id`. Supply `agent` and an adapter session ID to adopt an external session. | `{"machine":"MACHINE","session_id":"SESSION","prompt":"Now explain the main entry point"}` |
-| `cancel` | Cancel the task's active turn or remove it from the session queue. | `{"task_id":"TURN_UUID"}` |
-| `get_task` | Authoritative card with state and ordered steps; log omitted by default. `task_id` here is the card UUID. | `{"task_id":"CARD_UUID","include_log":true}` |
-| `list_tasks` | Active card summaries without logs by default; report unreadable cards without hiding good ones. | `{"include_finished":true}` |
-| `read_inbox` | Return unread Finished/Failed/Rejected/PermissionAsk events and mark that batch read. | `{}` |
-| `answer_permission` | Select an offered option or cancel an outstanding request. | `{"request_id":"REQUEST_UUID","decision":{"type":"selected","option_id":"offered-option-id"}}` |
-| `approve_machine` | Approve a known pending machine; local machines need no approval. Remote pairing is M3. | `{"machine":"MACHINE"}` |
+Use exactly one prompt source: positional text, `--prompt-file PATH`, or stdin
+with `-` (also when absent and stdin is not a terminal). Prompts must be non-empty,
+at most 256 KiB; titles are limited to 200 Unicode characters; `--mcp-servers FILE`
+accepts a JSON server array of at most 64 KiB. Inputs are rejected, never truncated.
+`send CARD` resolves the latest step's machine and session. Direct addressing uses
+`send --machine MACHINE --session SESSION`, optionally `--agent AGENT` for an
+external adapter session ID and `--card CARD` to override ownership.
+`cancel CARD` cancels the oldest running or waiting step before a queued step;
+if no active step exists it succeeds. Accepted queued continuations can also be
+reported as running, so oldest-first preserves the session queue order.
 
 A role dispatch can instead use
-`{"machine":"MACHINE","role":"developer","cwd":"/absolute/repo","prompt":"Implement the requested change"}`.
+`navarch hub dispatch --machine MACHINE --role developer --cwd /absolute/repo "Implement the requested change"`.
 Optional `project` must name a configured project or alias. Optional `mode`,
 `model` and `mcp_servers` override/provide session settings. A server entry has
 `name`, `command`, optional `args` and optional `env`, with literal arguments.
@@ -135,8 +141,8 @@ card or sending anything. This check includes JSON escaping, session settings
 and appended role preferences; shorten the prompt or other payload when the
 error reports that it cannot fit.
 
-Permission choices must come from that request's `options`. To cancel, use
-`{"request_id":"REQUEST_UUID","decision":{"type":"cancelled"}}`.
+Permission choices must come from that request's `options`. To cancel, run
+`navarch hub permission REQUEST_UUID --cancel`.
 Permissions still expire after ten minutes on the worker. An expired choice or a
 request for a completed turn cannot authorize later work.
 
@@ -149,15 +155,17 @@ external sessions with no owning card, the first send creates one.
 
 Card state is derived: `running` if any step is running or queued, then `waiting`
 if any step waits for permission, then `failed` if the latest step failed,
-otherwise `finished`. Rejection makes the step failed; a cancelled step is
-terminal and does not by itself fail the card. Cancel uses the turn ID returned
+then `cancelled` if the latest step was cancelled, otherwise `finished`.
+Rejection makes the step failed; cancellation is stored on both the step and
+the derived card state when it is the latest step and no work remains active. Cancel uses the turn ID returned
 as `task_id`; get_task uses the card ID returned as `card_id` in its `task_id`
 argument. A hand-off can change agent and machine without changing card identity.
 
 The compact card log contains only `time` (Unix milliseconds), `kind`, `step`
 (turn ID) and `summary` (at most 200 characters). It never stores envelopes or
 tool payloads. Durable deduplication IDs and permission routing metadata live
-separately on the card and are omitted from tool results. `get_task` omits the log
+separately on the card and are omitted from control results. Outstanding public
+permission details appear as `permission_requests` on task responses. `get_task` omits the log
 unless `include_log: true`; `list_tasks` returns summaries with no steps or logs.
 Worker progress uses human-readable tool titles and status or plan text, capped
 at 200 characters and coalesced to at most one message per second per turn.
@@ -199,7 +207,7 @@ loading. User configuration files are not rewritten on open.
 ## Control protocol
 
 `hub.sock` accepts one JSON request per line and returns one response per line.
-Use a `type` matching the tool name, with the same arguments. For example:
+Use a request `type` with the documented control arguments. For example:
 
 ```json
 {"type":"list_workers"}
@@ -211,7 +219,7 @@ multiple requests. Input lines and worker frame payloads are limited to 1 MiB;
 worker frames have a four-byte big-endian length prefix. Oversized control
 requests return a size error asking the caller to shorten the prompt or payload.
 Control types live in
-`navarch_hub::control` and contain no MCP SDK types. Requests and events update
+`navarch_hub::control` and use only Navarch and standard types. Requests and events update
 state under one hub runtime lock; file writes use same-directory temporary files
 and atomic rename. FileStore instances opened on the same canonical directory
 share a writer lock within the process.
@@ -254,43 +262,43 @@ network reconnections do not consume a lifetime handshake allowance.
 
 The inbox and task cards are authoritative. Events are bounded hints and never mark
 anything read or approve a permission. Each event has a persisted monotonic `seq`.
-There are three ways to follow work:
+Use `dispatch --wait` or `send --wait` for short work. For long work, dispatch
+without waiting and save its `card_id` and `seq`, then run this as a background
+shell command so the agent session is told when it ends:
 
-- **Claude Code channel:** register the stdio server under the name `navarch`,
-  passing `hub mcp --channel` (or set `NAVARCH_CHANNEL=1` on the server):
+```sh
+navarch hub wait --card CARD --after-seq SEQ --timeout 0 --json
+```
 
-  ```sh
-  claude mcp add --transport stdio --scope user navarch -- /absolute/path/to/navarch hub mcp --channel
-  MCP_PROTOCOL_NEGOTIATION=legacy claude --dangerously-load-development-channels server:navarch
-  ```
+Card waits stop on `finished`, `failed`, `rejected` or `permission_ask`. Without
+`--card`, wait returns when any newer event arrives, including read entries. The default timeout
+is 300 seconds; 0 means unlimited. The client reissues requests beyond the daemon's
+1800-second request cap and reconnects with backoff after restart. Dispatch/send
+responses carry a cursor captured before work is sent, so `--wait` cannot miss an
+instant result. Wait output contains `events`, the last processed `seq`, `outcome`,
+card/turn IDs, and result text or public permission details when available in JSON.
+Readable card outcomes print `card_id`, `task_id`, `outcome` and `seq`, then a
+blank line and the full result or permission block, without repeating event summaries.
 
-  Claude Code receives a block such as `<channel source="navarch" kind="finished"
-  card_id="..." machine="..." seq="...">` with a short instruction to call
-  `get_task`, or `read_inbox` and `answer_permission`. Finished, failed, rejected
-  and permission notifications include the event summary (at most 200 characters),
-  so the outcome is visible immediately. Each new MCP process starts at the daemon's
-  current sequence and sends only subsequent events; it does not replay the unread
-  backlog. Old events remain available through `read_inbox` and `wait_for_events`.
-  Notifications arrive without polling and do not require an acknowledgement.
-  The MCP process stays alive when
-  the daemon is down and reconnects with backoff, resuming after its last delivered
-  sequence. Without `--channel` or `NAVARCH_CHANNEL=1`, it sends no channel notifications.
-  Channels are a Claude Code research-preview feature, require a claude.ai or
-  Console login, and may change. Set `MCP_PROTOCOL_NEGOTIATION=legacy` on the
-  **Claude Code launch**, because channel registration requires a protocol revision
-  older than `2026-07-28`. rmcp's default is `2025-11-25`, but it echoes known
-  requested revisions, including `2026-07-28`.
-- **Any MCP client:** after dispatching, call `wait_for_events` when there is
-  nothing else to do. It returns early when unread newer entries exist, or returns
-  `[]` after `timeout_secs` (default 300, capped at 1800). Supply `after_seq` to
-  exclude older entries. Each returned event contains only `seq`, `kind`,
-  `card_id`, `step`, `machine`, `summary` and `time`, never a worker envelope.
-  Call `get_task` for full results, or `read_inbox` for permission request IDs and
-  offered options. It does not mark entries read; `read_inbox` still does. Large inboxes are returned in batches that fit the control frame limit; pass the last returned `seq` to wait for the next batch. Each `read_inbox` marks only its returned batch read.
-- **People and scripts:** run `navarch hub watch`, or `navarch hub watch --json`
-  for raw JSON lines. Ctrl-C stops watching. It replays unread inbox entries and
-  follows live events, including `worker_online` and `worker_offline` (these two
-  are bus-only and do not enter the inbox).
+On permission exit, readable output prints the request ID, tool, detail, offered
+options and exact shell-quoted answer commands. JSON includes
+`permission.answer_commands`, `permission.cancel_command` and `resume_command`. Answer, then resume with
+`wait --card CARD --after-seq SEQ`. Full results are also available with `task`.
+Every CLI wait (`wait`, `dispatch --wait`, `send --wait`) replays by sequence
+regardless of inbox read markers and never marks anything read. Another client
+reading the inbox cannot hide a completion or permission request from a wait.
+The control request `wait_for_events` accepts optional `include_read` (default
+`false` for backwards compatibility); CLI waits set it to `true`. `inbox` marks
+its returned batch read; `inbox --peek` uses a zero-second `wait_for_events`
+request with `include_read: false`, returns only unread entries and marks nothing.
+
+Exit codes for both standalone waits and `--wait`: 0 success/finished, 1 usage,
+daemon unreachable or hub rejection, 3 failed/policy rejected/cancelled, 4 permission
+answer required, 124 timeout (the task keeps running).
+
+For people and streaming clients, `navarch hub watch` follows unread replay and
+live events; `--json` prints raw JSON lines. Ctrl-C stops it. Online/offline hints
+are bus-only and do not enter the inbox.
 
 A dedicated control connection starts streaming after
 `{"type":"subscribe","after_seq":42}`. Replay includes unread inbox rows with
@@ -300,11 +308,11 @@ The broadcast buffer holds 256 hints, so publishers never wait for subscribers.
 A socket write stalled for ten seconds closes the subscriber connection. Existing
 request/response control connections continue to work normally.
 
-For a fresh channel process, `{"type":"subscribe_live"}` atomically registers
+For a fresh streaming client, `{"type":"subscribe_live"}` atomically registers
 its receiver and snapshots the latest sequence under the hub's publication lock.
 Its first line is `{"kind":"ready","seq":42}`, followed only by events newer
 than that cursor, including events published while the ready line is being sent.
-The channel saves this baseline even before its first notification; after a socket
+The client saves this baseline even before its first notification; after a socket
 drop it uses `subscribe` with the last delivered sequence (or that baseline).
 There is no separate cursor-query/subscription gap.
 

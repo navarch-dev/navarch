@@ -1,4 +1,4 @@
-//! Persistent hub records, independent of worker and MCP representations.
+//! Persistent hub records, independent of worker representations.
 use navarch_proto::{Capabilities, CardId, Envelope, MachineId, TaskId};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -130,6 +130,8 @@ impl TaskCard {
             "waiting"
         } else if self.steps.last().is_some_and(|s| s.state == "failed") {
             "failed"
+        } else if self.steps.last().is_some_and(|s| s.state == "cancelled") {
+            "cancelled"
         } else {
             "finished"
         }
@@ -152,13 +154,19 @@ pub struct CardLog {
     /// Human-readable text of at most 200 characters.
     pub summary: String,
 }
-/// Durable permission metadata; omitted from tool responses.
+/// Durable permission metadata; routing fields are omitted from control responses.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CardPermission {
     /// Permission request ID.
     pub request_id: uuid::Uuid,
     /// Owning turn ID.
     pub step: TaskId,
+    /// Bounded tool title for presentation.
+    #[serde(default)]
+    pub tool: String,
+    /// Bounded request detail for presentation.
+    #[serde(default)]
+    pub detail: String,
     /// Allowed answers.
     pub options: Vec<navarch_proto::PermissionOption>,
     /// Whether the hub already forwarded an answer.

@@ -11,8 +11,10 @@ impl Hub {
             Request::WaitForEvents {
                 timeout_secs,
                 after_seq,
+                include_read,
             } => Ok(serde_json::to_value(
-                self.wait_for_events(timeout_secs, after_seq).await?,
+                self.wait_for_events(timeout_secs, after_seq, include_read)
+                    .await?,
             )?),
             Request::ListSessions {
                 machine,

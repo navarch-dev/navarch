@@ -14,6 +14,7 @@ struct State {
     index: Index,
     seq: u64,
     inbox_ids: std::collections::HashSet<uuid::Uuid>,
+    read_inbox_ids: std::collections::HashSet<uuid::Uuid>,
 }
 /// Process-local store for tests, with the same locking and index semantics as files.
 #[derive(Default)]
@@ -106,12 +107,30 @@ impl Store for MemoryStore {
             state
                 .inbox
                 .iter()
-                .filter(|e| e.event.seq > after_seq)
+                .filter(|e| e.event.seq > after_seq && !state.read_inbox_ids.contains(&e.id))
                 .cloned(),
         )?;
         if mark_read {
-            state.inbox.retain(|e| !batch.iter().any(|b| b.id == e.id));
+            state.read_inbox_ids.extend(batch.iter().map(|e| e.id));
         }
         Ok(batch)
+    }
+    fn events_after(
+        &self,
+        after_seq: u64,
+        include_read: bool,
+    ) -> Result<Vec<HubEvent>, StoreError> {
+        let state = self.state()?;
+        let batch = inbox_batch(
+            state
+                .inbox
+                .iter()
+                .filter(|e| {
+                    e.event.seq > after_seq
+                        && (include_read || !state.read_inbox_ids.contains(&e.id))
+                })
+                .cloned(),
+        )?;
+        Ok(batch.into_iter().map(|entry| entry.event).collect())
     }
 }

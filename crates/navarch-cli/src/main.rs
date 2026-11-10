@@ -78,7 +78,17 @@ async fn remote(command: Command) -> anyhow::Result<u8> {
 
 #[tokio::main]
 async fn main() -> ExitCode {
-    let cli = Cli::parse();
+    let cli = match Cli::try_parse() {
+        Ok(cli) => cli,
+        Err(error) => {
+            let success = matches!(
+                error.kind(),
+                clap::error::ErrorKind::DisplayHelp | clap::error::ErrorKind::DisplayVersion
+            );
+            let _ = error.print();
+            return ExitCode::from(if success { 0 } else { 1 });
+        }
+    };
     let level = if matches!(cli.command, Command::Relay { .. }) {
         tracing::Level::INFO
     } else {
