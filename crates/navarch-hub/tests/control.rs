@@ -107,3 +107,106 @@ fn unknown_machine_and_pending_or_revoked_are_refused() {
         assert!(store.tasks().unwrap().0.is_empty());
     }
 }
+
+#[test]
+fn cross_machine_events_update_their_own_steps_and_card_state_is_derived() {
+    use navarch_proto::*;
+    use navarch_store::*;
+    use std::sync::Arc;
+    let store = Arc::new(MemoryStore::default());
+    let hub = Hub::new(store.clone());
+    let a: MachineId = "aaaaaaaaaaaaaaaaaaaaaaaaaa".parse().unwrap();
+    let b: MachineId = "77777777777777777777777774".parse().unwrap();
+    for machine in [&a, &b] {
+        store
+            .put_machine(Machine {
+                id: machine.clone(),
+                public_key: [0; 32],
+                display_name: "test".into(),
+                state: MachineState::Active,
+                capabilities: None,
+            })
+            .unwrap();
+    }
+    let first = TaskId::new();
+    let latest = TaskId::new();
+    let id = CardId::new();
+    store
+        .put_task(TaskCard {
+            id,
+            title: "handoff".into(),
+            project: None,
+            state: "ignored".into(),
+            steps: [(first, a.clone()), (latest, b.clone())]
+                .into_iter()
+                .map(|(task_id, machine)| Step {
+                    task_id,
+                    machine,
+                    created_at: 1,
+                    role: Some("developer".into()),
+                    agent: "fake".into(),
+                    session: None,
+                    adapter_session_id: None,
+                    cwd: None,
+                    state: "running".into(),
+                    result_summary: String::new(),
+                })
+                .collect(),
+            log: vec![],
+            applied_events: vec![],
+            permissions: vec![],
+        })
+        .unwrap();
+    let event = |from: MachineId, body: Body| Envelope {
+        v: 1,
+        id: uuid::Uuid::new_v4(),
+        from,
+        to: a.clone(),
+        body,
+    };
+    let failed = Body::Failed {
+        task_id: first,
+        error: "old turn failed".into(),
+    };
+    assert!(hub.apply(&event(b.clone(), failed.clone())).is_err());
+    hub.apply(&event(a.clone(), failed)).unwrap();
+    assert_eq!(store.task(id).unwrap().unwrap().state, "running");
+    hub.apply(&event(
+        b.clone(),
+        Body::PermissionAsk {
+            request_id: uuid::Uuid::new_v4(),
+            task_id: latest,
+            tool: "Edit".into(),
+            detail: "file".into(),
+            options: vec![],
+        },
+    ))
+    .unwrap();
+    assert_eq!(store.task(id).unwrap().unwrap().state, "waiting");
+    hub.apply(&event(
+        b.clone(),
+        Body::Accepted {
+            task_id: latest,
+            session_id: "second".into(),
+        },
+    ))
+    .unwrap();
+    assert_eq!(store.task(id).unwrap().unwrap().state, "waiting");
+    let done = event(
+        b,
+        Body::Finished {
+            task_id: latest,
+            session_id: "second".into(),
+            stop_reason: "end_turn".into(),
+            result: "done".into(),
+        },
+    );
+    hub.apply(&done).unwrap();
+    hub.apply(&done).unwrap();
+    let card = store.task(id).unwrap().unwrap();
+    assert_eq!(card.state, "finished");
+    assert_eq!(card.steps[0].state, "failed");
+    assert_eq!(card.steps[1].state, "finished");
+    assert_eq!(card.log.len(), 4);
+    assert_eq!(store.inbox(false).unwrap().len(), 3);
+}

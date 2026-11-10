@@ -35,7 +35,7 @@ impl Mcp {
 impl ServerHandler for Mcp {
     fn get_info(&self) -> ServerInfo {
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build()).with_server_info(Implementation::new("navarch",env!("CARGO_PKG_VERSION")))
-            .with_instructions("Choose workers explicitly. Dispatch returns a task ID; read_inbox retrieves completion and permission requests. The hub daemon owns all state.")
+            .with_instructions("Choose workers explicitly. Dispatch returns card_id and task_id; get_task reads a card UUID, cancel targets a turn UUID; read_inbox retrieves completion and permission requests. The hub daemon owns all state.")
     }
     async fn list_tools(
         &self,

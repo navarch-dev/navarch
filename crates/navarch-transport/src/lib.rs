@@ -12,7 +12,7 @@ pub use memory::{MemoryLink, memory_pair};
 use navarch_proto::MachineId;
 pub use reconnect::{Connector, LocalConnector, ReconnectingLink};
 pub use reliable::{Delivery, ReliableEvent, ReliableHandle, ReliableTask, reliable};
-pub use socket::PrivateListener;
+pub use socket::{PrivateListener, validate_socket_path};
 
 /// Maximum frame payload length.
 pub const MAX_FRAME: usize = 1024 * 1024;
@@ -20,7 +20,7 @@ pub const MAX_FRAME: usize = 1024 * 1024;
 #[derive(Debug, thiserror::Error)]
 pub enum LinkError {
     /// Underlying socket failure.
-    #[error("link I/O: {0}")]
+    #[error("link I/O")]
     Io(#[from] std::io::Error),
     /// Invalid or oversized input.
     #[error("link protocol: {0}")]

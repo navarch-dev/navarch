@@ -86,7 +86,7 @@ impl Default for Policy {
 #[derive(Debug, thiserror::Error)]
 pub enum PolicyError {
     /// Invalid TOML, including its field path.
-    #[error("{0}")]
+    #[error(transparent)]
     Parse(#[from] toml::de::Error),
     /// A configured field is invalid.
     #[error("{0}")]

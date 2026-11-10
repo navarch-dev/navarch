@@ -69,6 +69,7 @@ impl Worker {
             state.registry.records.insert(
                 id.clone(),
                 SessionRecord {
+                    navarch_started: true,
                     task_id,
                     agent: agent.into(),
                     session_id: id.clone(),

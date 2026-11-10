@@ -41,6 +41,7 @@ fn golden_dispatch() {
 fn golden_send_to_session() {
     check(
         Body::SendToSession {
+            agent: None,
             task_id: task(),
             session_id: "s".into(),
             prompt: "next".into(),
@@ -189,4 +190,45 @@ fn dispatch_optional_settings_and_mcp_round_trip() {
         serde_json::from_value::<Body>(serde_json::to_value(&body).unwrap()).unwrap(),
         body
     );
+}
+
+#[test]
+fn golden_list_sessions() {
+    check(
+        Body::ListSessions {
+            request_id: id(),
+            cwd: Some("/tmp".into()),
+        },
+        include_str!("golden/list_sessions.json"),
+    );
+}
+#[test]
+fn golden_session_list() {
+    check(
+        Body::SessionList {
+            request_id: id(),
+            sessions: vec![WorkerSession {
+                session_id: None,
+                agent: "fake".into(),
+                adapter_session_id: "external".into(),
+                cwd: "/tmp".into(),
+                title: Some("Work".into()),
+                updated_at: Some("2026-11-10T00:00:00Z".into()),
+                navarch_started: false,
+            }],
+        },
+        include_str!("golden/session_list.json"),
+    );
+}
+#[test]
+fn card_ids_and_summary_bounds() {
+    let id = CardId::new();
+    assert_eq!(id.to_string().parse::<CardId>().unwrap(), id);
+    assert_eq!(
+        serde_json::from_value::<CardId>(serde_json::to_value(id).unwrap()).unwrap(),
+        id
+    );
+    assert!("invalid".parse::<CardId>().is_err());
+    assert_eq!(short_summary("  hello\n world "), "hello world");
+    assert_eq!(short_summary(&"界".repeat(201)).chars().count(), 200);
 }

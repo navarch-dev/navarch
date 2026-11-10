@@ -180,6 +180,24 @@ pub enum Body {
         session_id: SessionId,
         /// Prompt text.
         prompt: String,
+        /// Adapter name when addressing an adapter session directly.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        agent: Option<String>,
+    },
+    /// Enumerate resumable sessions.
+    ListSessions {
+        /// Correlation identifier.
+        request_id: Uuid,
+        /// Optional working-directory filter.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cwd: Option<PathBuf>,
+    },
+    /// Worker session enumeration response.
+    SessionList {
+        /// Correlation identifier.
+        request_id: Uuid,
+        /// Resumable sessions known to this worker and its adapters.
+        sessions: Vec<WorkerSession>,
     },
     /// Cancel a task's active turn.
     Cancel {
@@ -257,4 +275,23 @@ pub enum Body {
         /// Worker capabilities.
         capabilities: Capabilities,
     },
+}
+
+/// A resumable session reported by a worker.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkerSession {
+    /// Public worker ID, absent until an external session is adopted.
+    pub session_id: Option<SessionId>,
+    /// Adapter name (adapter IDs are scoped to this name).
+    pub agent: String,
+    /// Opaque adapter session identifier.
+    pub adapter_session_id: SessionId,
+    /// Working directory reported by the adapter or registry.
+    pub cwd: PathBuf,
+    /// Human-facing session title, if available.
+    pub title: Option<String>,
+    /// Adapter timestamp, or registry Unix milliseconds as text.
+    pub updated_at: Option<String>,
+    /// Whether Navarch originally created this session.
+    pub navarch_started: bool,
 }

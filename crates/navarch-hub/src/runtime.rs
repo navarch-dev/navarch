@@ -1,5 +1,5 @@
 use crate::HubError;
-use navarch_proto::{Body, MachineId, TaskId};
+use navarch_proto::{Body, CardId, MachineId, WorkerSession};
 use navarch_store::{Machine, MachineState, Step, Store, TaskCard};
 use navarch_transport::{LocalHello, ReliableHandle};
 use serde_json::{Value, json};
@@ -15,6 +15,8 @@ pub(crate) struct Connection {
 }
 pub(crate) struct State {
     pub online: HashMap<MachineId, Connection>,
+    pub session_queries:
+        HashMap<Uuid, (MachineId, tokio::sync::oneshot::Sender<Vec<WorkerSession>>)>,
 }
 /// Shared hub state; workers interact only through protocol envelopes.
 #[derive(Clone)]
@@ -29,6 +31,7 @@ impl Hub {
             store,
             state: Arc::new(Mutex::new(State {
                 online: HashMap::new(),
+                session_queries: HashMap::new(),
             })),
         }
     }
@@ -91,7 +94,7 @@ impl Hub {
             .map(|c| c.sender.clone())
             .ok_or_else(|| HubError::Invalid(format!("machine {id} is offline")))
     }
-    pub(crate) fn card(&self, id: TaskId) -> Result<TaskCard, HubError> {
+    pub(crate) fn card(&self, id: CardId) -> Result<TaskCard, HubError> {
         self.store
             .task(id)?
             .ok_or_else(|| HubError::Invalid(format!("unknown task {id}")))
@@ -100,6 +103,7 @@ impl Hub {
         &self,
         sender: ReliableHandle,
         step: Step,
+        card_id: Option<CardId>,
         title: String,
         project: Option<String>,
         body: Body,
@@ -108,15 +112,34 @@ impl Hub {
             Body::Dispatch { task_id, .. } | Body::SendToSession { task_id, .. } => *task_id,
             _ => return Err(HubError::Invalid("expected task command".into())),
         };
-        self.store.put_task(TaskCard {
-            id: task_id,
-            title,
-            project,
-            state: "queued".into(),
-            steps: vec![step],
-            log: vec![],
-        })?;
+        let mut card = if let Some(id) = card_id {
+            self.card(id)?
+        } else {
+            TaskCard {
+                id: CardId::new(),
+                title,
+                project,
+                state: String::new(),
+                steps: vec![],
+                log: vec![],
+                applied_events: vec![],
+                permissions: vec![],
+            }
+        };
+        let card_id = card.id;
+        card.steps.push(step);
+        card.derive_state();
+        self.store.put_task(card)?;
         sender.send(body)?;
-        Ok(json!({"task_id":task_id}))
+        Ok(json!({"card_id":card_id,"task_id":task_id}))
     }
+}
+
+/// Submission timestamp used for ordering steps across cards.
+pub(crate) fn timestamp() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos()
+        .min(u64::MAX as u128) as u64
 }

@@ -23,15 +23,20 @@ async fn rmcp_handshake_tool_discovery_forwarding_and_errors() {
         public_key: navarch_crypto::Identity::generate().public_key(),
         display_name: "hub".into(),
     };
+    let store = Arc::new(navarch_store::MemoryStore::default());
+    use navarch_store::Store;
+    store
+        .put_machine(navarch_store::Machine {
+            id: hello.machine_id().unwrap(),
+            public_key: [171; 32],
+            display_name: "test".into(),
+            state: navarch_store::MachineState::Active,
+            capabilities: None,
+        })
+        .unwrap();
     let home = temp.path().to_owned();
     let daemon = tokio::spawn(async move {
-        crate::serve(
-            &home,
-            hello,
-            Arc::new(navarch_store::MemoryStore::default()),
-        )
-        .await
-        .unwrap();
+        crate::serve(&home, hello, store).await.unwrap();
     });
     ready(&socket).await;
     let (client, server) = tokio::io::duplex(65536);
@@ -86,10 +91,22 @@ async fn rmcp_handshake_tool_discovery_forwarding_and_errors() {
             for tool in tools {
                 assert!(tool["description"].as_str().unwrap().len() > 40);
                 assert_eq!(tool["inputSchema"]["type"], "object");
+                if tool["name"] == "get_task" {
+                    assert_eq!(
+                        tool["inputSchema"]["properties"]["include_log"]["default"],
+                        false
+                    );
+                }
+                if tool["name"] == "dispatch" || tool["name"] == "send_to_session" {
+                    assert!(tool["inputSchema"]["properties"].get("card_id").is_some());
+                }
             }
         } else if id == 3 {
             assert_eq!(response["result"]["isError"], false);
-            assert_eq!(response["result"]["content"][0]["text"], "[]");
+            let workers: Value =
+                serde_json::from_str(response["result"]["content"][0]["text"].as_str().unwrap())
+                    .unwrap();
+            assert_eq!(workers[0]["machine"]["public_key"], "ab".repeat(32));
         } else {
             assert_eq!(response["result"]["isError"], true);
             assert!(

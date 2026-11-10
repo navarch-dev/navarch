@@ -83,7 +83,7 @@ async fn new_prompt_config_mcp_events_and_paginated_listing() {
     while let Some(event) = rx.recv().await {
         events.push(event);
     }
-    assert!(events.contains(&AgentEvent::ToolCall("Edit".into())));
+    assert!(events.contains(&AgentEvent::ToolCall("Edit: pending".into())));
     f.driver.new_session(f.req()).await.unwrap();
     assert_eq!(
         f.driver
@@ -270,4 +270,30 @@ async fn missing_executable_reports_startup_failure() {
     );
     let error = driver.new_session(f.req()).await.unwrap_err().to_string();
     assert!(error.contains("/missing-navarch-test-adapter"), "{error}");
+}
+
+#[tokio::test]
+async fn listing_follows_pages_stops_at_500_and_preserves_metadata() {
+    let f = fixture(json!({"page_size":180}));
+    let sessions: std::collections::HashMap<_,_> = (0..505).map(|i| {
+        let id = format!("external-{i:03}");
+        (id.clone(), json!({"sessionId":id,"cwd":f.temp.path(),"title":"External work","updatedAt":"2026-11-10T00:00:00Z"}))
+    }).collect();
+    std::fs::write(
+        f.temp.path().join("script.sessions.json"),
+        serde_json::to_vec(&sessions).unwrap(),
+    )
+    .unwrap();
+    let list = f.driver.list_sessions(Some(f.temp.path())).await.unwrap();
+    assert_eq!(list.len(), 500);
+    assert_eq!(list[0].title.as_deref(), Some("External work"));
+    assert_eq!(list[0].updated_at.as_deref(), Some("2026-11-10T00:00:00Z"));
+    let requests = f.requests();
+    let pages: Vec<_> = requests
+        .iter()
+        .filter(|r| r["method"] == "session/list")
+        .collect();
+    assert_eq!(pages.len(), 3);
+    assert_eq!(pages[1]["params"]["cursor"], "180");
+    assert_eq!(pages[2]["params"]["cursor"], "360");
 }

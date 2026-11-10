@@ -104,7 +104,13 @@ impl AgentDriver for FakeDriver {
                     FakeStep::Permission(mut request) => {
                         request.session_id = id.clone();
                         let decision = self.permissions.request(request).await;
-                        let _ = events.send(AgentEvent::Other(format!("{decision:?}")));
+                        let text = match decision {
+                            PermissionDecision::Selected { option_id } => {
+                                format!("Selected {option_id}")
+                            }
+                            PermissionDecision::Cancelled => "Cancelled".into(),
+                        };
+                        let _ = events.send(AgentEvent::Other(text));
                     }
                     FakeStep::Delay(duration) => tokio::time::sleep(duration).await,
                     FakeStep::Crash => return Err(DriverError::Adapter("scripted crash".into())),
@@ -133,6 +139,7 @@ impl AgentDriver for FakeDriver {
             .map(|(id, (req, _))| SessionInfo {
                 session_id: id.clone(),
                 cwd: req.cwd.clone(),
+                updated_at: None,
                 title: None,
             })
             .collect())

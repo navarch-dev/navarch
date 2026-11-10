@@ -1,5 +1,6 @@
 mod commands;
 mod scheduling;
+mod sessions;
 use crate::{
     Clock, EscalationHandler, Registry, SessionRecord, SessionState, TokioClock, WorkerError,
     config::{AgentConfig, Config, canonical_cwd},
@@ -204,7 +205,11 @@ impl Worker {
                 task_id,
                 session_id,
                 prompt,
-            } => self.send(task_id, &session_id, prompt).await,
+                agent,
+            } => {
+                self.send_target(task_id, &session_id, agent.as_deref(), prompt)
+                    .await
+            }
             Body::Cancel { task_id } => self.cancel(task_id).await,
             Body::PermissionAnswer {
                 request_id,
@@ -216,6 +221,13 @@ impl Worker {
             Body::Probe => {
                 self.emit(Body::ProbeReport {
                     capabilities: self.probe().await,
+                });
+                Ok(())
+            }
+            Body::ListSessions { request_id, cwd } => {
+                self.emit(Body::SessionList {
+                    request_id,
+                    sessions: self.list_sessions(cwd.as_deref()).await?,
                 });
                 Ok(())
             }

@@ -15,6 +15,7 @@ pub struct PrivateListener {
 impl PrivateListener {
     /// Bind a 0600 socket. Never replace a live listener, symlink, or regular file.
     pub fn bind(path: &Path) -> Result<Self, LinkError> {
+        validate_socket_path(path)?;
         if let Ok(meta) = fs::symlink_metadata(path) {
             if !meta.file_type().is_socket() {
                 return Err(LinkError::Protocol(format!(
@@ -62,4 +63,16 @@ impl Drop for PrivateListener {
             let _ = fs::remove_file(&self.path);
         }
     }
+}
+
+/// Validate a Unix socket address before I/O, with an actionable path-length error.
+pub fn validate_socket_path(path: &Path) -> Result<(), LinkError> {
+    use std::os::unix::{ffi::OsStrExt, net::SocketAddr};
+    SocketAddr::from_pathname(path).map(|_| ()).map_err(|error| {
+        // Ask std for this platform's SUN_LEN bound; no unsafe libc layout access.
+        let limit = (1..=1024).take_while(|len| SocketAddr::from_pathname("x".repeat(*len)).is_ok()).last().unwrap_or(0);
+        if path.as_os_str().as_bytes().len() > limit {
+            LinkError::Protocol(format!("Unix socket path '{}' is too long ({} bytes; limit {limit} bytes); set NAVARCH_HOME to a shorter directory", path.display(), path.as_os_str().as_bytes().len()))
+        } else { LinkError::Protocol(format!("invalid Unix socket path '{}': {error}", path.display())) }
+    })
 }

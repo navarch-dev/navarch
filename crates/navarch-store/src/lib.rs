@@ -6,7 +6,7 @@ mod role;
 mod types;
 pub use file::FileStore;
 pub use memory::MemoryStore;
-use navarch_proto::TaskId;
+use navarch_proto::CardId;
 pub use types::*;
 
 /// Storage or serialization failure, with file context when applicable.
@@ -41,7 +41,7 @@ pub trait Store: Send + Sync {
     /// Write a named role atomically.
     fn put_role(&self, name: &str, role: Role) -> Result<(), StoreError>;
     /// Read an authoritative card.
-    fn task(&self, id: TaskId) -> Result<Option<TaskCard>, StoreError>;
+    fn task(&self, id: CardId) -> Result<Option<TaskCard>, StoreError>;
     /// Write a card and update the active index while holding the writer lock.
     fn put_task(&self, card: TaskCard) -> Result<(), StoreError>;
     /// List every readable card and report corrupt ones.

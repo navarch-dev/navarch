@@ -10,7 +10,19 @@ use std::{
 };
 use tokio::sync::{Mutex, oneshot};
 
-type Streams = Arc<Mutex<HashMap<String, (EventSink, String, bool)>>>;
+type Streams = Arc<
+    Mutex<
+        HashMap<
+            String,
+            (
+                EventSink,
+                String,
+                bool,
+                HashMap<String, (String, acp::ToolCallStatus)>,
+            ),
+        >,
+    >,
+>;
 struct Live {
     connection: ConnectionTo<Agent>,
     initialized: acp::InitializeResponse,
@@ -200,10 +212,10 @@ impl AgentDriver for AcpDriver {
             }
             live.connection.clone()
         };
-        self.streams
-            .lock()
-            .await
-            .insert(session.clone(), (events, String::new(), false));
+        self.streams.lock().await.insert(
+            session.clone(),
+            (events, String::new(), false, HashMap::new()),
+        );
         let response = connection
             .send_request(acp::PromptRequest::new(
                 session.clone(),
@@ -216,7 +228,7 @@ impl AgentDriver for AcpDriver {
             .lock()
             .await
             .remove(session)
-            .map(|(_, text, _)| text)
+            .map(|(_, text, _, _)| text)
             .unwrap_or_default();
         let response = response.map_err(error)?;
         let stop_reason = serde_json::to_value(response.stop_reason)
@@ -268,7 +280,12 @@ impl AgentDriver for AcpDriver {
                 session_id: s.session_id.to_string(),
                 cwd: s.cwd,
                 title: s.title,
+                updated_at: s.updated_at,
             }));
+            result.truncate(500);
+            if result.len() >= 500 {
+                break;
+            }
             cursor = response.next_cursor;
             if let Some(c) = &cursor {
                 if !seen.insert(c.clone()) {

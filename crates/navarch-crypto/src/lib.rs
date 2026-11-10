@@ -11,7 +11,7 @@ use std::{fs, io::Write, path::Path};
 #[derive(Debug, thiserror::Error)]
 pub enum IdentityError {
     /// Filesystem operation failed.
-    #[error("identity key: {0}")]
+    #[error("identity key I/O")]
     Io(#[from] std::io::Error),
     /// The key file has an invalid length.
     #[error("identity.key must contain exactly 32 secret bytes")]

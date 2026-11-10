@@ -1,5 +1,5 @@
 //! Persistent hub records, independent of worker and MCP representations.
-use navarch_proto::{Capabilities, Envelope, MachineId, TaskId};
+use navarch_proto::{Capabilities, CardId, Envelope, MachineId, TaskId};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -20,6 +20,7 @@ pub struct Machine {
     /// Derived machine ID.
     pub id: MachineId,
     /// Ed25519 public key.
+    #[serde(with = "navarch_proto::public_key")]
     pub public_key: [u8; 32],
     /// Display name.
     pub display_name: String,
@@ -64,9 +65,13 @@ pub struct Role {
     /// Markdown guidance appended to the dispatched prompt.
     pub preferences: String,
 }
-/// One turn in a task, identified by session once accepted.
+/// One independently identified turn in an ordered card.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Step {
+    /// Independent wire turn identifier.
+    pub task_id: TaskId,
+    /// Submission time in Unix nanoseconds, used to find a session's latest owner.
+    pub created_at: u64,
     /// Requested role, if any.
     pub role: Option<String>,
     /// Configured adapter name.
@@ -75,6 +80,12 @@ pub struct Step {
     pub machine: MachineId,
     /// Public worker session ID.
     pub session: Option<String>,
+    /// Adapter ID when known, scoped to the step's agent.
+    #[serde(default)]
+    pub adapter_session_id: Option<String>,
+    /// Worker-local directory when known, retained for stale session listings.
+    #[serde(default)]
+    pub cwd: Option<std::path::PathBuf>,
     /// Current turn state.
     pub state: String,
     /// Final or progress summary.
@@ -83,8 +94,8 @@ pub struct Step {
 /// Authoritative task card.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TaskCard {
-    /// Task ID.
-    pub id: TaskId,
+    /// Card ID.
+    pub id: CardId,
     /// User-facing title.
     pub title: String,
     /// Optional project name.
@@ -93,24 +104,68 @@ pub struct TaskCard {
     pub state: String,
     /// Dispatches and subsequent turns.
     pub steps: Vec<Step>,
-    /// Applied worker envelopes, also used for restart-safe deduplication.
+    /// Compact human-facing event history.
     #[serde(default)]
-    pub log: Vec<Envelope>,
+    pub log: Vec<CardLog>,
+    /// Durable deduplication metadata, separate from the human-facing log.
+    #[serde(default)]
+    pub applied_events: Vec<uuid::Uuid>,
+    /// Permission routing and validation metadata retained across hub restarts.
+    #[serde(default)]
+    pub permissions: Vec<CardPermission>,
 }
 impl TaskCard {
-    /// Whether this task belongs in the active index.
-    pub fn is_active(&self) -> bool {
-        !matches!(
-            self.state.as_str(),
-            "finished" | "failed" | "rejected" | "cancelled"
-        )
+    /// Recompute state from steps in the design's precedence order.
+    pub fn derive_state(&mut self) {
+        self.state = if self
+            .steps
+            .iter()
+            .any(|s| matches!(s.state.as_str(), "running" | "queued"))
+        {
+            "running"
+        } else if self.steps.iter().any(|s| s.state == "waiting") {
+            "waiting"
+        } else if self.steps.last().is_some_and(|s| s.state == "failed") {
+            "failed"
+        } else {
+            "finished"
+        }
+        .into();
     }
+    /// Whether this card belongs in the active index.
+    pub fn is_active(&self) -> bool {
+        matches!(self.state.as_str(), "running" | "waiting")
+    }
+}
+/// One compact card-log entry. Never contains a wire envelope or tool payload.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CardLog {
+    /// Unix milliseconds.
+    pub time: u64,
+    /// Event category.
+    pub kind: String,
+    /// Wire turn ID.
+    pub step: TaskId,
+    /// Human-readable text of at most 200 characters.
+    pub summary: String,
+}
+/// Durable permission metadata; omitted from tool responses.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CardPermission {
+    /// Permission request ID.
+    pub request_id: uuid::Uuid,
+    /// Owning turn ID.
+    pub step: TaskId,
+    /// Allowed answers.
+    pub options: Vec<navarch_proto::PermissionOption>,
+    /// Whether the hub already forwarded an answer.
+    pub answered: bool,
 }
 /// Derived active-task index entry.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TaskEntry {
-    /// Task ID.
-    pub id: TaskId,
+    /// Card ID.
+    pub id: CardId,
     /// Task title.
     pub title: String,
     /// Current state.

@@ -37,15 +37,15 @@ pub(super) fn tools() -> Vec<Tool> {
         ),
         tool(
             "list_sessions",
-            "List sessions observed by this hub. Includes completed turns; standalone sessions are not visible until used by the hub.",
-            json!({"machine":machine}),
+            "Query worker registries and adapters for resumable sessions. Offline or timed-out workers return hub-observed sessions marked stale.",
+            json!({"machine":machine,"cwd":string("Optional worker-local directory filter.")}),
             &[],
         ),
         tool(
             "dispatch",
-            "Start a task on an explicit active, online machine. Supply exactly one of agent or role, a worker-local cwd and prompt. The worker enforces its local policy. Returns task_id; poll get_task or read_inbox for completion.",
+            "Start a task on an explicit active, online machine. Supply exactly one of agent or role, a worker-local cwd and prompt. The worker enforces its local policy. Returns card_id and task_id; poll get_task by card_id or read_inbox for completion.",
             json!({
-                "machine":machine,"agent":string("Configured adapter name reported by that machine. Omit when using role."),
+                "card_id":string("Optional existing card UUID for a hand-off."),"machine":machine,"agent":string("Configured adapter name reported by that machine. Omit when using role."),
                 "role":string("Name of hub/roles/<name>.md. Supplies agent, default model/mode and prompt preferences. Omit when using agent."),
                 "cwd":string("Non-empty directory path on the worker machine, inside its allowed_roots."),
                 "prompt":string("Task instructions for the agent."),"title":string("Optional task-card title."),"project":string("Optional configured project name or alias."),
@@ -56,8 +56,8 @@ pub(super) fn tools() -> Vec<Tool> {
         ),
         tool(
             "send_to_session",
-            "Queue a follow-up in an existing session on an explicit machine. Returns a new task_id for this turn; a busy session runs queued turns in order.",
-            json!({"machine":machine,"session_id":session,"prompt":string("Follow-up instructions.")}),
+            "Queue a follow-up in an existing session on an explicit machine. Appends to the session’s latest owning card unless card_id overrides it. Supply agent with an adapter session ID to adopt an external session. Returns card_id and task_id.",
+            json!({"machine":machine,"session_id":session,"agent":string("Adapter name when session_id is an external adapter session ID."),"card_id":string("Optional card UUID override."),"prompt":string("Follow-up instructions.")}),
             &["machine", "session_id", "prompt"],
         ),
         tool(
@@ -68,13 +68,13 @@ pub(super) fn tools() -> Vec<Tool> {
         ),
         tool(
             "get_task",
-            "Read a task card with current state, session, result summary and event log.",
-            json!({"task_id":task}),
+            "Read a card by its card UUID, with state and steps. Compact event log is omitted unless include_log is true.",
+            json!({"task_id":string("Card UUID returned as card_id."),"include_log":{"type":"boolean","default":false}}),
             &["task_id"],
         ),
         tool(
             "list_tasks",
-            "List active task cards and report corrupt files. Set include_finished to also see finished, failed, rejected and cancelled turns.",
+            "List active card summaries without logs and report corrupt files. Set include_finished to also see finished and failed cards.",
             json!({"include_finished":{"type":"boolean","description":"Include terminal task cards; defaults to false."}}),
             &[],
         ),

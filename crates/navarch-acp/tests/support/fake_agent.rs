@@ -92,7 +92,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .as_str()
                     .and_then(|s| s.parse::<usize>().ok())
                     .unwrap_or(0);
-                let end = (offset + 1).min(items.len());
+                let end =
+                    (offset + script["page_size"].as_u64().unwrap_or(1) as usize).min(items.len());
                 json!({"sessions":items.get(offset..end).unwrap_or_default(),"nextCursor":if end<items.len(){Some(end.to_string())}else{None}})
             }
             "session/cancel" => {

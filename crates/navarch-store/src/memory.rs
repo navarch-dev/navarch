@@ -9,7 +9,7 @@ struct State {
     projects: Projects,
     routes: Routes,
     roles: BTreeMap<String, Role>,
-    tasks: BTreeMap<TaskId, TaskCard>,
+    tasks: BTreeMap<CardId, TaskCard>,
     inbox: Vec<InboxEvent>,
     index: Index,
 }
@@ -52,11 +52,12 @@ impl Store for MemoryStore {
         self.state()?.roles.insert(name.into(), value);
         Ok(())
     }
-    fn task(&self, id: TaskId) -> Result<Option<TaskCard>, StoreError> {
+    fn task(&self, id: CardId) -> Result<Option<TaskCard>, StoreError> {
         Ok(self.state()?.tasks.get(&id).cloned())
     }
-    fn put_task(&self, value: TaskCard) -> Result<(), StoreError> {
+    fn put_task(&self, mut value: TaskCard) -> Result<(), StoreError> {
         let mut state = self.state()?;
+        value.derive_state();
         state.tasks.insert(value.id, value);
         state.index = derive_index(&state.tasks.values().cloned().collect::<Vec<_>>(), vec![]);
         Ok(())

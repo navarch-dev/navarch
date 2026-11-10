@@ -73,7 +73,7 @@ impl Fixture {
     }
     fn req(&self) -> NewSession {
         NewSession {
-            cwd: self.temp.path().to_owned(),
+            cwd: self.temp.path().canonicalize().unwrap(),
             mode: None,
             model: None,
             mcp_servers: vec![],
@@ -611,4 +611,110 @@ async fn different_adapters_with_same_session_id_route_turns_and_permissions() {
     assert_eq!(records.len(), 2);
     assert_ne!(records[0].session_id, records[1].session_id);
     assert_eq!(records[0].adapter_session_id, records[1].adapter_session_id);
+}
+
+#[tokio::test]
+async fn discover_and_adopt_external_sessions_only_inside_allowed_roots() {
+    use navarch_acp::AgentDriver;
+    let mut f = Fixture::new(vec![vec![FakeStep::Reply("adopted".into())]], 1, "deny");
+    let external = f.driver.new_session(f.req()).await.unwrap().session_id;
+    let mut outside = f.req();
+    outside.cwd = PathBuf::from("/");
+    let outside = f.driver.new_session(outside).await.unwrap().session_id;
+    let request_id = uuid::Uuid::new_v4();
+    f.worker
+        .handle(Body::ListSessions {
+            request_id,
+            cwd: Some(f.temp.path().to_owned()),
+        })
+        .await
+        .unwrap();
+    let Body::SessionList {
+        request_id: reply_id,
+        sessions,
+    } = f.message().await
+    else {
+        panic!("expected list");
+    };
+    assert_eq!(reply_id, request_id);
+    assert_eq!(sessions.len(), 1);
+    assert_eq!(sessions[0].adapter_session_id, external);
+    assert!(!sessions[0].navarch_started);
+    assert!(sessions[0].session_id.is_none());
+    let denied = TaskId::new();
+    assert!(
+        f.worker
+            .send_target(denied, &outside, Some("fake"), "no".into())
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("allowed_roots")
+    );
+    assert!(matches!(f.message().await, Body::Rejected { task_id, .. } if task_id == denied));
+    assert!(f.worker.sessions().unwrap().is_empty());
+    assert_eq!(f.driver.resume_count(), 0);
+    let accepted = TaskId::new();
+    f.worker
+        .handle(Body::SendToSession {
+            task_id: accepted,
+            agent: Some("fake".into()),
+            session_id: external.clone(),
+            prompt: "yes".into(),
+        })
+        .await
+        .unwrap();
+    let (_, public) = f.accepted().await;
+    assert_ne!(public, external);
+    assert!(
+        matches!(f.finished(accepted).await, Body::Finished { result, .. } if result == "adopted")
+    );
+    assert_eq!(f.driver.resume_count(), 1);
+    let sessions = f.worker.list_sessions(None).await.unwrap();
+    assert_eq!(sessions.len(), 2);
+    let session = sessions
+        .iter()
+        .find(|s| s.adapter_session_id == external)
+        .unwrap();
+    assert_eq!(session.session_id.as_deref(), Some(public.as_str()));
+    assert!(!session.navarch_started);
+    assert!(!Registry::load(f.temp.path()).unwrap().sessions()[0].navarch_started);
+    let second = TaskId::new();
+    f.worker
+        .send_target(second, &external, Some("fake"), "again".into())
+        .await
+        .unwrap();
+    assert_eq!(f.accepted().await.1, public);
+    f.finished(second).await;
+    assert_eq!(f.worker.sessions().unwrap().len(), 1);
+}
+#[tokio::test]
+async fn session_discovery_merges_registry_and_adapter_and_caps_each_agent() {
+    use navarch_acp::AgentDriver;
+    let mut f = Fixture::new(vec![], 1, "deny");
+    let turn = TaskId::new();
+    f.worker
+        .dispatch(turn, "fake", f.req(), "start".into())
+        .await
+        .unwrap();
+    let (_, public) = f.accepted().await;
+    f.finished(turn).await;
+    for _ in 0..505 {
+        f.driver.new_session(f.req()).await.unwrap();
+    }
+    let sessions = f.worker.list_sessions(None).await.unwrap();
+    assert_eq!(sessions.len(), 500);
+    let owned = sessions
+        .iter()
+        .find(|s| s.session_id.as_deref() == Some(&public))
+        .unwrap();
+    assert!(owned.navarch_started);
+    assert!(owned.updated_at.is_some());
+    assert_eq!(sessions.iter().filter(|s| s.navarch_started).count(), 1);
+    assert!(
+        f.worker
+            .send_target(TaskId::new(), "missing", Some("unknown"), "no".into())
+            .await
+            .is_err()
+    );
+    assert_eq!(f.worker.sessions().unwrap().len(), 1);
 }

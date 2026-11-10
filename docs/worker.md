@@ -1,7 +1,8 @@
-# Standalone worker
+# Worker
 
-M1 runs one turn per CLI invocation. It does not connect to a hub or install
-adapters. Configuration and session metadata live under `NAVARCH_HOME`, defaulting
+Standalone commands run one turn per CLI invocation. M2 also provides
+`navarch worker serve` to connect this same runtime to the local hub. Navarch
+does not install adapters. Configuration and session metadata live under `NAVARCH_HOME`, defaulting
 to `~/.navarch`. Run `navarch worker init` to create commented examples; existing
 files are never overwritten.
 
@@ -126,6 +127,35 @@ throwaway sessions to discover versions and model IDs; each adapter probe has a
 30-second deadline. It also reports OS, architecture, running turns, and git
 repositories at the root and up to two directory levels below allowed roots.
 Directory symlinks are not traversed during repository scanning.
+
+## Hub sessions and progress
+
+Run `navarch worker serve` after `navarch hub serve`, with the same
+`NAVARCH_HOME`. The worker reconnects automatically and answers `ListSessions`
+from both its persisted registry and each configured driver’s `session/list`.
+The driver follows pagination and stops at 500 sessions per agent; the merged
+response also caps each agent at 500, preferring registry sessions. Unsupported
+or failed adapter listings retain registry entries. Session metadata includes
+agent, adapter ID, optional public worker ID, cwd, title, update time and whether
+Navarch originally started the session. Standalone `worker sessions` continues
+to read only the registry without starting adapters.
+
+The hub can send a prompt to an external session using its agent name and adapter
+session ID. The worker looks it up through that driver, canonicalizes its cwd and
+checks both `allowed_roots` and `allowed_agents` before adoption. A refused
+session is never resumed or added to the registry. An adopted session receives
+a new public worker ID, is resumed lazily with the configured default mode and
+retains `navarch_started: false` across restarts. Subsequent prompts use the same
+queue, concurrency limits, cancellation and permission path as sessions created
+by dispatch. Adapter IDs are always scoped by agent name.
+
+Each prompt has its own wire `task_id`, even when it appends to an existing hub
+card. Progress messages contain short tool titles and status or readable plan
+text, never ACP debug output. Summaries are limited to 200 characters. Within
+each turn, the first update can be sent immediately and subsequent updates are
+coalesced to the latest summary at intervals of at least one second. A pending
+summary may be discarded when the turn ends; Finished/Failed carries completion.
+Fine-grained standalone text streaming is unaffected.
 
 ## Offline testing
 

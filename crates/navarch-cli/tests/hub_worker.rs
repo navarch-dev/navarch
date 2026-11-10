@@ -28,57 +28,35 @@ async fn dispatch_followup_cancel_permission_inbox_cards_and_index() {
     .await;
     let first = f.dispatch();
     let card = f.card(first, "finished").await;
-    assert!(
-        card.log
-            .iter()
-            .any(|e| matches!(e.body, Body::Accepted { .. }))
-    );
-    assert!(
-        card.log
-            .iter()
-            .any(|e| matches!(e.body, Body::Finished { .. }))
-    );
+    assert!(card.log.iter().any(|e| e.kind == "accepted"));
+    assert!(card.log.iter().any(|e| e.kind == "finished"));
     assert_eq!(card.steps[0].result_summary, "first");
     assert!(f.store.index().unwrap().tasks.is_empty());
     let session = card.steps[0].session.as_ref().unwrap();
     let second = f.follow(session);
     let second_card = f.card(second, "finished").await;
-    assert_eq!(second_card.steps[0].session.as_ref(), Some(session));
-    assert_eq!(second_card.steps[0].result_summary, "followup");
+    assert_eq!(second_card.steps[1].session.as_ref(), Some(session));
+    assert_eq!(second_card.steps[1].result_summary, "followup");
     let cancel = f.follow(session);
-    wait(|| {
-        f.store
-            .task(cancel)
-            .unwrap()
-            .unwrap()
-            .log
-            .iter()
-            .any(|e| matches!(e.body, Body::Progress { .. }))
-    })
-    .await;
+    wait(|| f.turn_card(cancel).log.iter().any(|e| e.kind == "progress")).await;
     assert!(
         f.store
             .index()
             .unwrap()
             .tasks
             .iter()
-            .any(|e| e.id == cancel)
+            .any(|e| e.id == card.id)
     );
     f.hub.request(Request::Cancel { task_id: cancel }).unwrap();
-    f.card(cancel, "cancelled").await;
+    f.card(cancel, "finished").await;
     let permission = f.follow(session);
-    let card = f.card(permission, "permission").await;
-    assert_eq!(f.store.index().unwrap().tasks[0].state, "permission");
+    let card = f.card(permission, "waiting").await;
+    assert_eq!(f.store.index().unwrap().tasks[0].state, "waiting");
     let ask = card
-        .log
+        .permissions
         .iter()
-        .find_map(|e| {
-            if let Body::PermissionAsk { request_id, .. } = e.body {
-                Some(request_id)
-            } else {
-                None
-            }
-        })
+        .map(|p| p.request_id)
+        .next()
         .unwrap();
     let inbox = f.hub.request(Request::ReadInbox).unwrap();
     assert!(
@@ -108,26 +86,31 @@ async fn dispatch_followup_cancel_permission_inbox_cards_and_index() {
         })
         .unwrap();
     assert_eq!(
-        f.card(permission, "finished").await.steps[0].result_summary,
+        f.card(permission, "finished").await.steps[3].result_summary,
         "permitted"
     );
     assert!(f.store.index().unwrap().tasks.is_empty());
     assert_eq!(
         f.hub
             .request(Request::GetTask {
-                task_id: permission
+                task_id: card.id,
+                include_log: false,
             })
             .unwrap()["state"],
         "finished"
     );
     assert_eq!(
         f.hub
-            .request(Request::ListSessions { machine: None })
+            .request_async(Request::ListSessions {
+                machine: None,
+                cwd: None
+            })
+            .await
             .unwrap()["sessions"]
             .as_array()
             .unwrap()
             .len(),
-        1
+        2
     );
     assert_eq!(
         f.hub
@@ -138,7 +121,7 @@ async fn dispatch_followup_cancel_permission_inbox_cards_and_index() {
             .as_array()
             .unwrap()
             .len(),
-        4
+        1
     );
     assert_eq!(
         f.hub
@@ -161,17 +144,12 @@ async fn hub_restart_mid_turn_retains_finished_and_deduplicates_durable_events()
     )
     .await;
     let task = f.dispatch();
-    let waiting = f.card(task, "permission").await;
+    let waiting = f.card(task, "waiting").await;
     let ask = waiting
-        .log
+        .permissions
         .iter()
-        .find_map(|e| {
-            if let Body::PermissionAsk { request_id, .. } = e.body {
-                Some(request_id)
-            } else {
-                None
-            }
-        })
+        .map(|p| p.request_id)
+        .next()
         .unwrap();
     f.hub_task.abort();
     let _ = (&mut f.hub_task).await;
@@ -184,20 +162,23 @@ async fn hub_restart_mid_turn_retains_finished_and_deduplicates_durable_events()
         },
     );
     wait(|| f.worker.running_turns() == 0).await;
-    assert_eq!(f.store.task(task).unwrap().unwrap().state, "permission");
+    assert_eq!(f.turn_card(task).state, "waiting");
     f.restart().await;
     let card = f.card(task, "finished").await;
     assert_eq!(card.steps[0].result_summary, "survived");
     assert!(f.store.index().unwrap().tasks.is_empty());
-    let event = card
-        .log
-        .iter()
-        .find(|e| matches!(e.body, Body::Finished { .. }))
-        .unwrap();
+    let event = f
+        .store
+        .inbox(false)
+        .unwrap()
+        .into_iter()
+        .find(|e| matches!(e.envelope.body, Body::Finished { .. }))
+        .unwrap()
+        .envelope;
     let count = f.store.inbox(false).unwrap().len();
-    f.hub.apply(event).unwrap();
+    f.hub.apply(&event).unwrap();
     assert_eq!(f.store.inbox(false).unwrap().len(), count);
-    assert_eq!(f.store.task(task).unwrap().unwrap().log, card.log);
+    assert_eq!(f.turn_card(task).log, card.log);
 }
 #[tokio::test]
 async fn dispatch_validation_role_settings_and_local_approval() {
@@ -250,7 +231,7 @@ async fn dispatch_validation_role_settings_and_local_approval() {
 async fn rejection_and_driver_failure_reach_cards_index_and_inbox() {
     let f = Fixture::new(vec![vec![FakeStep::Crash]], false).await;
     let rejected = f.task_id(f.hub.request(request(json!({"type":"dispatch","machine":f.machine(),"agent":"fake","cwd":"/","prompt":"outside roots"}))).unwrap());
-    let card = f.card(rejected, "rejected").await;
+    let card = f.card(rejected, "failed").await;
     assert!(card.steps[0].result_summary.contains("allowed_roots"));
     assert!(f.worker.sessions().unwrap().is_empty());
     let failed = f.dispatch();
@@ -268,4 +249,184 @@ async fn rejection_and_driver_failure_reach_cards_index_and_inbox() {
         .map(|e| e["envelope"]["body"]["type"].as_str().unwrap())
         .collect();
     assert_eq!(types, vec!["rejected", "failed"]);
+}
+
+#[tokio::test]
+async fn queued_turns_handoffs_and_card_overrides_preserve_independent_identity() {
+    let f = Fixture::new(
+        vec![
+            vec![
+                FakeStep::Tool("First: running".into()),
+                FakeStep::Delay(Duration::from_secs(60)),
+            ],
+            vec![FakeStep::Reply("queued turn completed".into())],
+            vec![FakeStep::Reply("handoff".into())],
+            vec![FakeStep::Reply("separate card".into())],
+            vec![FakeStep::Reply("界".repeat(300))],
+            vec![FakeStep::Reply("latest owner".into())],
+        ],
+        false,
+    )
+    .await;
+    let first = f.dispatch();
+    wait(|| f.turn_card(first).log.iter().any(|e| e.kind == "progress")).await;
+    let original = f.turn_card(first);
+    let session = original.steps[0].session.as_ref().unwrap();
+    let cancelled = f.follow(session);
+    let queued = f.follow(session);
+    assert_ne!(first, cancelled);
+    assert_ne!(cancelled, queued);
+    assert_eq!(f.turn_card(queued).id, original.id);
+    assert_eq!(f.turn_card(first).steps.len(), 3);
+    f.hub
+        .request(Request::Cancel { task_id: cancelled })
+        .unwrap();
+    wait(|| f.turn_card(cancelled).steps[1].state == "cancelled").await;
+    assert_eq!(f.turn_card(first).state, "running");
+    f.hub.request(Request::Cancel { task_id: first }).unwrap();
+    let done = f.card(queued, "finished").await;
+    assert_eq!(done.steps[2].result_summary, "queued turn completed");
+    let handoff = f.hub.request(request(json!({"type":"dispatch","machine":f.machine(),"agent":"fake","cwd":f.temp.path(),"prompt":"handoff","card_id":original.id}))).unwrap();
+    assert_eq!(handoff["card_id"], original.id.to_string());
+    let handoff = f.task_id(handoff);
+    assert_eq!(
+        f.card(handoff, "finished").await.steps[3].result_summary,
+        "handoff"
+    );
+    let separate = f.dispatch();
+    let separate_card = f.card(separate, "finished").await;
+    let overridden = f.hub.request(request(json!({"type":"send_to_session","machine":f.machine(),"session_id":session,"prompt":"move ownership","card_id":separate_card.id}))).unwrap();
+    assert_eq!(overridden["card_id"], separate_card.id.to_string());
+    let overridden = f.task_id(overridden);
+    let done = f.card(overridden, "finished").await;
+    assert_eq!(done.steps.len(), 2);
+    assert_eq!(done.steps[1].result_summary, "界".repeat(300));
+    assert!(
+        done.log
+            .iter()
+            .all(|entry| entry.summary.chars().count() <= 200)
+    );
+    let last = f.follow(session);
+    let done = f.card(last, "finished").await;
+    assert_eq!(done.id, separate_card.id);
+    assert_eq!(done.steps.len(), 3);
+    assert_eq!(done.steps[2].result_summary, "latest owner");
+    let default = f
+        .hub
+        .request(request(json!({"type":"get_task","task_id":done.id})))
+        .unwrap();
+    assert!(default.get("log").is_none());
+    assert!(default.get("permissions").is_none());
+    assert!(default.get("applied_events").is_none());
+    let full = f
+        .hub
+        .request(request(
+            json!({"type":"get_task","task_id":done.id,"include_log":true}),
+        ))
+        .unwrap();
+    let log = full["log"].as_array().unwrap();
+    assert!(!log.is_empty());
+    assert!(log.iter().all(|e| e.as_object().unwrap().len() == 4
+        && e.get("time").is_some()
+        && e.get("kind").is_some()
+        && e.get("step").is_some()
+        && e.get("summary").is_some()));
+    let summaries = f
+        .hub
+        .request(Request::ListTasks {
+            include_finished: true,
+        })
+        .unwrap();
+    assert_eq!(summaries["tasks"].as_array().unwrap().len(), 2);
+    assert!(
+        summaries["tasks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|c| c.get("log").is_none() && c.get("steps").is_none())
+    );
+    // Late events for the first turn cannot change its completed sibling or card.
+    f.hub
+        .apply(&Envelope {
+            v: 1,
+            id: "00000000-0000-4000-8000-000000000099".parse().unwrap(),
+            from: f.machine(),
+            to: f.machine(),
+            body: Body::Progress {
+                task_id: first,
+                summary: "late".into(),
+            },
+        })
+        .unwrap();
+    assert_eq!(f.turn_card(first).steps[0].state, "cancelled");
+    assert_eq!(f.turn_card(first).steps[2].state, "finished");
+    assert_eq!(f.turn_card(first).state, "finished");
+}
+#[tokio::test]
+async fn session_discovery_queries_worker_and_offline_fallback_is_stale() {
+    let f = Fixture::new(vec![], false).await;
+    let task = f.dispatch();
+    let card = f.card(task, "finished").await;
+    use navarch_acp::{AgentDriver, NewSession};
+    f.driver
+        .new_session(NewSession {
+            cwd: f.temp.path().canonicalize().unwrap(),
+            mode: None,
+            model: None,
+            mcp_servers: vec![],
+        })
+        .await
+        .unwrap();
+    let list = f
+        .hub
+        .request_async(Request::ListSessions {
+            machine: Some(f.machine()),
+            cwd: Some(f.temp.path().to_owned()),
+        })
+        .await
+        .unwrap();
+    let sessions = list["sessions"].as_array().unwrap();
+    // Both the dispatch and an independently created adapter session are discoverable.
+    assert_eq!(sessions.len(), 2);
+    assert!(sessions.iter().all(|s| s["stale"] == false));
+    assert!(sessions.iter().any(|s| s["session_id"]
+        == card.steps[0].session.as_ref().unwrap().as_str()
+        && s["navarch_started"] == true));
+    let external = sessions
+        .iter()
+        .find(|s| s["navarch_started"] == false)
+        .unwrap();
+    let adopted = f.hub.request(request(json!({"type":"send_to_session","machine":f.machine(),"agent":external["agent"],"session_id":external["adapter_session_id"],"prompt":"adopt"}))).unwrap();
+    let adopted = f.card(f.task_id(adopted), "finished").await;
+    assert!(adopted.steps[0].session.is_some());
+    assert!(
+        !f.worker
+            .sessions()
+            .unwrap()
+            .iter()
+            .find(|s| Some(&s.session_id) == adopted.steps[0].session.as_ref())
+            .unwrap()
+            .navarch_started
+    );
+    let follow = f.hub.request(request(json!({"type":"send_to_session","machine":f.machine(),"agent":external["agent"],"session_id":external["adapter_session_id"],"prompt":"same card"}))).unwrap();
+    assert_eq!(follow["card_id"], adopted.id.to_string());
+    f.card(f.task_id(follow), "finished").await;
+    f.hub_task.abort();
+    wait(|| f.hub.request(Request::ListWorkers).unwrap()[0]["online"] == false).await;
+    let fallback = f
+        .hub
+        .request_async(Request::ListSessions {
+            machine: Some(f.machine()),
+            cwd: None,
+        })
+        .await
+        .unwrap();
+    assert_eq!(fallback["sessions"].as_array().unwrap().len(), 2);
+    assert!(
+        fallback["sessions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|s| s["stale"] == true)
+    );
 }

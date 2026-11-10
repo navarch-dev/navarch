@@ -24,6 +24,9 @@ pub enum SessionState {
 /// Persistent session metadata.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SessionRecord {
+    /// Whether Navarch originally created this session (legacy records were created here).
+    #[serde(default = "started_by_navarch")]
+    pub navarch_started: bool,
     /// Most recently submitted task ID.
     pub task_id: TaskId,
     /// Configured adapter name.
@@ -102,4 +105,8 @@ impl Registry {
         temp.persist(&self.path).map_err(|e| file(&self.path, e))?;
         Ok(())
     }
+}
+
+fn started_by_navarch() -> bool {
+    true
 }

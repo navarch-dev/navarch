@@ -83,7 +83,7 @@ Hub to worker:
 | `Cancel` | `task_id` | Cancel the running turn. |
 | `PermissionAnswer` | `request_id`, `decision` | Answer an escalated permission request. |
 | `Probe` | none | Ask for a capability report. |
-| `ListSessions` | `request_id`, `cwd?` | Ask for the sessions this worker can resume. |
+| `ListSessions` | `request_id`, `agent?`, `cwd?`, `limit?` | Ask for the sessions this worker can resume, most recently updated first. `limit` defaults to 50 and is capped at 200. |
 | `Ack` | `of` | Acknowledge a worker message. |
 
 Worker to hub:
@@ -104,6 +104,7 @@ Rules:
 
 - A receiver that sees an unknown `v` replies `Failed`/drops with a clear log line; it never guesses.
 - Unknown fields are ignored. Unknown `type` values are an error.
+- No envelope may exceed the frame limit (1 MiB). A sender checks the encoded size before queuing and returns an error to its caller instead of sending; it never queues an envelope it cannot deliver. Variable-size bodies are bounded at the source: `SessionList` honours `limit`, titles are cut to 120 characters, and the list is shortened further if the encoded envelope would exceed 256 KiB (`truncated: true`).
 - Every non-`Ack` message is acknowledged. The sender retries unacknowledged messages after a reconnect. Receivers de-duplicate by `id`.
 
 ## 5. Driving agents (`navarch-acp`)

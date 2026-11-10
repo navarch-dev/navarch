@@ -142,3 +142,65 @@ async fn both_peers_can_send_maximum_frames_before_reading() {
     .await
     .unwrap();
 }
+
+#[tokio::test]
+async fn long_socket_path_names_path_limit_and_shorter_home_without_repetition() {
+    let path = std::path::PathBuf::from(format!("/tmp/{}/hub.sock", "x".repeat(200)));
+    let error = match navarch_transport::PrivateListener::bind(&path) {
+        Ok(_) => panic!("accepted long path"),
+        Err(error) => error,
+    };
+    let message = error.to_string();
+    assert!(message.contains(&path.display().to_string()), "{message}");
+    assert!(
+        message.contains("limit") && message.contains("bytes"),
+        "{message}"
+    );
+    assert!(message.contains("set NAVARCH_HOME to a shorter directory"));
+    assert!(!message.contains("SUN_LEN"));
+    assert_eq!(message.matches("too long").count(), 1);
+    assert!(std::error::Error::source(&error).is_none());
+    let hello = navarch_transport::LocalHello {
+        public_key: [0; 32],
+        display_name: "test".into(),
+    };
+    let error = match navarch_transport::LocalLink::connect(&path, &hello).await {
+        Ok(_) => panic!("accepted long path"),
+        Err(error) => error,
+    };
+    assert_eq!(error.to_string(), message);
+}
+#[test]
+fn introductions_use_hex_and_accept_old_keys() {
+    let hello = navarch_transport::LocalHello {
+        public_key: [254; 32],
+        display_name: "test".into(),
+    };
+    let mut json = serde_json::to_value(&hello).unwrap();
+    assert_eq!(json["public_key"], "fe".repeat(32));
+    json["public_key"] = serde_json::json!(vec![254; 32]);
+    assert_eq!(
+        serde_json::from_value::<navarch_transport::LocalHello>(json)
+            .unwrap()
+            .public_key,
+        hello.public_key
+    );
+}
+
+#[test]
+fn socket_path_limit_matches_platform_and_counts_bytes() {
+    use std::{os::unix::net::SocketAddr, path::Path};
+    let limit = (1..256)
+        .take_while(|n| SocketAddr::from_pathname("x".repeat(*n)).is_ok())
+        .last()
+        .unwrap();
+    assert!(navarch_transport::validate_socket_path(Path::new(&"x".repeat(limit))).is_ok());
+    let error = navarch_transport::validate_socket_path(Path::new(&"x".repeat(limit + 1)))
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains(&format!("limit {limit} bytes")), "{error}");
+    let error = navarch_transport::validate_socket_path(Path::new(&"界".repeat(limit)))
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains(&format!("{} bytes", limit * 3)), "{error}");
+}

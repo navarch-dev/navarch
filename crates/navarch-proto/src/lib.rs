@@ -63,7 +63,7 @@ pub struct TaskId(Uuid);
 
 /// A string is not a UUID task identifier.
 #[derive(Debug, thiserror::Error)]
-#[error("task ID must be a UUID: {0}")]
+#[error("task ID must be a UUID")]
 pub struct ParseTaskIdError(#[from] uuid::Error);
 
 impl fmt::Display for TaskId {
@@ -152,5 +152,79 @@ impl TaskId {
 impl Default for TaskId {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// A user-facing work card, distinct from an individual wire turn.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct CardId(Uuid);
+impl CardId {
+    /// Generate a new card identifier.
+    pub fn new() -> Self {
+        Self(Uuid::new_v4())
+    }
+}
+impl Default for CardId {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+impl fmt::Display for CardId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
+impl FromStr for CardId {
+    type Err = uuid::Error;
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        value.parse().map(Self)
+    }
+}
+/// Collapse whitespace and bound human-facing summaries to 200 characters.
+pub fn short_summary(text: &str) -> String {
+    text.split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .take(200)
+        .collect()
+}
+/// Serde compatibility for public keys: write lowercase hex, read hex or legacy arrays.
+pub mod public_key {
+    use serde::{Deserialize, Deserializer, Serializer};
+    /// Serialize a 32-byte public key as lowercase hex.
+    pub fn serialize<S: Serializer>(key: &[u8; 32], serializer: S) -> Result<S::Ok, S::Error> {
+        use std::fmt::Write;
+        let mut text = String::with_capacity(64);
+        for byte in key {
+            let _ = write!(text, "{byte:02x}");
+        }
+        serializer.serialize_str(&text)
+    }
+    /// Deserialize current hex strings or legacy byte arrays.
+    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<[u8; 32], D::Error> {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Key {
+            Hex(String),
+            Array([u8; 32]),
+        }
+        match Key::deserialize(deserializer)? {
+            Key::Array(key) => Ok(key),
+            Key::Hex(text) => {
+                let mut key = [0; 32];
+                if text.len() != 64 || !text.is_ascii() {
+                    return Err(serde::de::Error::custom(
+                        "public key must be 64 hex characters",
+                    ));
+                }
+                for (i, byte) in key.iter_mut().enumerate() {
+                    *byte = u8::from_str_radix(&text[i * 2..i * 2 + 2], 16)
+                        .map_err(serde::de::Error::custom)?;
+                }
+                Ok(key)
+            }
+        }
     }
 }

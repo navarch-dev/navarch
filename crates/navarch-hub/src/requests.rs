@@ -1,5 +1,6 @@
+use crate::runtime::timestamp;
 use crate::{Hub, HubError, control::Request, runtime::State};
-use navarch_proto::{Body, Envelope, TaskId};
+use navarch_proto::{Body, TaskId};
 use navarch_store::{MachineState, Step};
 use serde_json::{Value, json};
 use uuid::Uuid;
@@ -16,21 +17,11 @@ impl Hub {
                     .map(|m| json!({"machine":m,"online":state.online.contains_key(&m.id)}))
                     .collect(),
             )),
-            Request::ListSessions { machine } => {
-                let (cards, corrupt) = self.store.tasks()?;
-                let mut sessions = std::collections::BTreeMap::new();
-                for card in cards {
-                    for step in card.steps {
-                        if machine.as_ref().is_none_or(|m| m == &step.machine)
-                            && let Some(session) = &step.session
-                        {
-                            sessions.insert((step.machine.clone(),session.clone()), json!({"session_id":session,"machine":step.machine,"agent":step.agent}));
-                        }
-                    }
-                }
-                Ok(json!({"sessions":sessions.into_values().collect::<Vec<_>>(),"corrupt":corrupt}))
-            }
+            Request::ListSessions { .. } => Err(HubError::Invalid(
+                "use request_async for worker session discovery".into(),
+            )),
             Request::Dispatch {
+                card_id,
                 machine,
                 agent,
                 role,
@@ -92,13 +83,18 @@ impl Hub {
                 self.create(
                     sender,
                     Step {
+                        task_id,
+                        created_at: timestamp(),
                         role,
                         agent: agent.clone(),
                         machine: machine.clone(),
                         session: None,
+                        adapter_session_id: None,
+                        cwd: Some(cwd.clone()),
                         state: "queued".into(),
                         result_summary: String::new(),
                     },
+                    card_id,
                     title,
                     project,
                     Body::Dispatch {
@@ -116,48 +112,91 @@ impl Hub {
                 machine,
                 session_id,
                 prompt,
+                card_id,
+                agent,
             } => {
                 let sender = self.sender(&state, &machine)?;
                 let (cards, _) = self.store.tasks()?;
-                let mut step = cards
-                    .into_iter()
-                    .flat_map(|c| c.steps)
-                    .find(|s| s.machine == machine && s.session.as_ref() == Some(&session_id))
-                    .ok_or_else(|| {
-                        HubError::Invalid(format!("unknown session {session_id} on {machine}"))
-                    })?;
+                let owner = cards
+                    .iter()
+                    .flat_map(|c| c.steps.iter().map(move |s| (c.id, s)))
+                    .filter(|(_, s)| {
+                        s.machine == machine
+                            && if let Some(agent) = &agent {
+                                &s.agent == agent
+                                    && s.adapter_session_id.as_ref() == Some(&session_id)
+                            } else {
+                                s.session.as_ref() == Some(&session_id)
+                            }
+                    })
+                    .max_by_key(|(_, s)| s.created_at);
+                let task_id = TaskId::new();
+                let (owner_id, mut step) = if let Some((id, step)) = owner {
+                    (Some(id), step.clone())
+                } else if let Some(name) = &agent {
+                    (
+                        None,
+                        Step {
+                            task_id,
+                            created_at: timestamp(),
+                            role: None,
+                            agent: name.clone(),
+                            machine: machine.clone(),
+                            session: None,
+                            adapter_session_id: Some(session_id.clone()),
+                            cwd: None,
+                            state: String::new(),
+                            result_summary: String::new(),
+                        },
+                    )
+                } else {
+                    return Err(HubError::Invalid(format!(
+                        "unknown session {session_id} on {machine}; supply agent and adapter session ID to adopt it"
+                    )));
+                };
+                step.task_id = task_id;
+                step.created_at = timestamp();
                 step.state = "queued".into();
                 step.result_summary.clear();
-                let task_id = TaskId::new();
                 let title = prompt.chars().take(120).collect();
                 self.create(
                     sender,
                     step,
+                    card_id.or(owner_id),
                     title,
                     None,
                     Body::SendToSession {
                         task_id,
                         session_id,
                         prompt,
+                        agent,
                     },
                 )
             }
             Request::Cancel { task_id } => {
-                let card = self.card(task_id)?;
-                let step = card
-                    .steps
-                    .last()
-                    .ok_or_else(|| HubError::Invalid("task has no steps".into()))?;
+                let (cards, _) = self.store.tasks()?;
+                let step = cards
+                    .iter()
+                    .flat_map(|c| &c.steps)
+                    .find(|s| s.task_id == task_id)
+                    .ok_or_else(|| HubError::Invalid(format!("unknown turn {task_id}")))?;
                 self.sender(&state, &step.machine)?
                     .send(Body::Cancel { task_id })?;
                 Ok(json!({"queued":true}))
             }
-            Request::GetTask { task_id } => Ok(serde_json::to_value(self.card(task_id)?)?),
+            Request::GetTask {
+                task_id,
+                include_log,
+            } => {
+                let mut value = serde_json::to_value(self.card(task_id)?)?;
+                clean_card(&mut value, include_log);
+                Ok(value)
+            }
             Request::ListTasks { include_finished } => {
                 let (cards, corrupt) = self.store.tasks()?;
-                Ok(
-                    json!({"tasks":cards.into_iter().filter(|c| include_finished || c.is_active()).collect::<Vec<_>>(),"corrupt":corrupt}),
-                )
+                let tasks = cards.into_iter().filter(|c| include_finished || c.is_active())
+                    .map(|c| json!({"id":c.id,"title":c.title,"project":c.project,"state":c.state,"step_count":c.steps.len()})).collect::<Vec<_>>();
+                Ok(json!({"tasks":tasks,"corrupt":corrupt}))
             }
             Request::ReadInbox => Ok(serde_json::to_value(self.store.inbox(true)?)?),
             Request::AnswerPermission {
@@ -185,46 +224,58 @@ impl Hub {
     ) -> Result<Value, HubError> {
         let (cards, _) = self.store.tasks()?;
         for mut card in cards {
-            if card.log.iter().any(
-                |e| matches!(e.body, Body::PermissionAnswer {request_id:id,..} if id == request_id),
-            ) {
+            let Some(index) = card
+                .permissions
+                .iter()
+                .position(|p| p.request_id == request_id)
+            else {
+                continue;
+            };
+            let permission = &card.permissions[index];
+            if permission.answered {
                 return Err(HubError::Invalid("permission already answered".into()));
             }
-            let ask = card.log.iter().find(|e| matches!(e.body, Body::PermissionAsk {request_id:id,..} if id == request_id)).cloned();
-            if let Some(ask) = ask {
-                if !card.is_active() {
-                    return Err(HubError::Invalid("permission turn has ended".into()));
-                }
-                if let (
-                    navarch_proto::PermissionDecision::Selected { option_id },
-                    Body::PermissionAsk { options, .. },
-                ) = (&decision, &ask.body)
-                    && !options.iter().any(|o| &o.id == option_id)
-                {
-                    return Err(HubError::Invalid(
-                        "permission option was not offered".into(),
-                    ));
-                }
-                let body = Body::PermissionAnswer {
+            let step = card
+                .steps
+                .iter_mut()
+                .find(|s| s.task_id == permission.step)
+                .ok_or_else(|| HubError::Invalid("permission step is missing".into()))?;
+            if matches!(step.state.as_str(), "finished" | "failed" | "cancelled") {
+                return Err(HubError::Invalid("permission turn has ended".into()));
+            }
+            if let navarch_proto::PermissionDecision::Selected { option_id } = &decision
+                && !permission.options.iter().any(|o| &o.id == option_id)
+            {
+                return Err(HubError::Invalid(
+                    "permission option was not offered".into(),
+                ));
+            }
+            self.sender(state, &step.machine)?
+                .send(Body::PermissionAnswer {
                     request_id,
                     decision,
-                };
-                self.sender(state, &ask.from)?.send(body.clone())?;
-                card.log.push(Envelope {
-                    v: navarch_proto::PROTOCOL_VERSION,
-                    id: Uuid::new_v4(),
-                    from: ask.to,
-                    to: ask.from,
-                    body,
-                });
-                card.state = "running".into();
-                if let Some(step) = card.steps.last_mut() {
-                    step.state = "running".into();
-                }
-                self.store.put_task(card)?;
-                return Ok(json!({"queued":true}));
-            }
+                })?;
+            card.permissions[index].answered = true;
+            step.state = "running".into();
+            card.log.push(navarch_store::CardLog {
+                time: timestamp() / 1_000_000,
+                kind: "permission_answer".into(),
+                step: step.task_id,
+                summary: "Permission answered".into(),
+            });
+            card.derive_state();
+            self.store.put_task(card)?;
+            return Ok(json!({"queued":true}));
         }
         Err(HubError::Invalid("unknown permission request".into()))
+    }
+}
+fn clean_card(value: &mut Value, include_log: bool) {
+    if let Some(object) = value.as_object_mut() {
+        object.remove("applied_events");
+        object.remove("permissions");
+        if !include_log {
+            object.remove("log");
+        }
     }
 }

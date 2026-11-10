@@ -44,10 +44,17 @@ Then inspect the daemon:
 navarch hub status
 navarch hub tasks
 navarch hub tasks --all
+navarch hub status --json
+navarch hub tasks --all --json
 ```
 
+Status and tasks print readable tables by default; `--json` prints their structured
+control results. Task listings contain card summaries without logs.
+
 On first local connection the worker is recorded as active, with its display name
-and public key. Hub and local worker may share the same machine identity.
+and public key. Public keys are lowercase 64-character hex strings in machine
+files, control results, MCP output and local introductions. Legacy byte-array keys
+are still accepted when reading. Hub and local worker may share the same machine identity.
 `identity.key` contains 32 Ed25519 secret bytes and has mode 0600. The machine ID
 is lowercase unpadded base32 of the first 16 bytes of BLAKE2s-256 of the public
 key. An existing corrupt key produces an error and is preserved.
@@ -55,14 +62,16 @@ key. An existing corrupt key produces an error and is preserved.
 The hub creates `hub.sock` (control) and `hub-worker.sock` (worker frames), both
 mode 0600. Ctrl-C stops serving and removes owned socket paths. After an abrupt
 exit, startup replaces stale sockets, preserving regular files, symlinks and live
-listeners. Stop an existing daemon before starting another one.
+listeners. Stop an existing daemon before starting another one. If a Unix socket
+path exceeds the platform limit, the error names the path and byte limit; set
+`NAVARCH_HOME` to a shorter directory.
 
 A worker reconnects automatically with jittered exponential delays of 1–60
 seconds. Its in-memory outbox keeps stable envelope IDs until acknowledged and
 resends them after reconnection. Acknowledgements follow application of events to
 hub state. A live worker can finish a turn while the hub is down and deliver the
 result after it returns. Restarting the worker itself does not preserve its
-in-memory delivery outbox. Durable task logs prevent replayed events from
+in-memory delivery outbox. Durable event-ID metadata on cards prevents replayed events from
 reverting finished cards or duplicating events after a hub restart. Transport
 remembers the most recent 4096 received envelope IDs per peer; it does not promise
 message ordering. The hub handles late Accepted/Progress events without reverting
@@ -93,19 +102,19 @@ follow-up to its session using an authenticated adapter.
 ## Tools and example arguments
 
 The MCP tool name is shown before each JSON argument object. Replace `MACHINE`
-with an ID returned by `list_workers`, `TASK_UUID` with a returned task UUID,
-`SESSION` with a worker session ID, and `REQUEST_UUID` with a permission request
-UUID. These examples are reference calls, not commands to run as a shell script.
+with an ID returned by `list_workers`, `TURN_UUID` with a returned `task_id`,
+`CARD_UUID` with a returned `card_id`, `SESSION` with a worker session ID, and
+`REQUEST_UUID` with a permission request UUID. These examples are reference calls, not commands to run as a shell script.
 
 | Tool | Behavior | Example arguments |
 |---|---|---|
 | `list_workers` | Known machines, approval/online state and last capabilities. | `{}` |
-| `list_sessions` | Sessions observed by the hub, optionally filtered by machine. | `{"machine":"MACHINE"}` |
-| `dispatch` | Create a turn on an explicit machine; returns `task_id`. Supply exactly one of `agent` or `role`. | `{"machine":"MACHINE","agent":"codex","cwd":"/absolute/path/to/repo","prompt":"Describe the test setup","title":"Inspect tests"}` |
-| `send_to_session` | Queue a follow-up, preserving session history; returns a new `task_id` for this turn. | `{"machine":"MACHINE","session_id":"SESSION","prompt":"Now explain the main entry point"}` |
-| `cancel` | Cancel the task's active turn or remove it from the session queue. | `{"task_id":"TASK_UUID"}` |
-| `get_task` | Authoritative card with state, session, summaries and event log. | `{"task_id":"TASK_UUID"}` |
-| `list_tasks` | Active cards by default; report corrupt cards without hiding good ones. | `{"include_finished":true}` |
+| `list_sessions` | Query worker registries and adapters; optionally filter by machine and cwd. A worker timeout (10 seconds) or offline worker returns hub-observed sessions marked `stale: true`. | `{"machine":"MACHINE"}` |
+| `dispatch` | Create a card and turn on an explicit machine; returns `card_id` and `task_id`. Pass `card_id` to append a hand-off step. Supply exactly one of `agent` or `role`. | `{"machine":"MACHINE","agent":"codex","cwd":"/absolute/path/to/repo","prompt":"Describe the test setup","title":"Inspect tests"}` |
+| `send_to_session` | Append to the session’s latest owning card; optional `card_id` overrides it. Returns `card_id` and a new turn `task_id`. Supply `agent` and an adapter session ID to adopt an external session. | `{"machine":"MACHINE","session_id":"SESSION","prompt":"Now explain the main entry point"}` |
+| `cancel` | Cancel the task's active turn or remove it from the session queue. | `{"task_id":"TURN_UUID"}` |
+| `get_task` | Authoritative card with state and ordered steps; log omitted by default. `task_id` here is the card UUID. | `{"task_id":"CARD_UUID","include_log":true}` |
+| `list_tasks` | Active card summaries without logs by default; report unreadable cards without hiding good ones. | `{"include_finished":true}` |
 | `read_inbox` | Return unread Finished/Failed/Rejected/PermissionAsk events and mark that batch read. | `{}` |
 | `answer_permission` | Select an offered option or cancel an outstanding request. | `{"request_id":"REQUEST_UUID","decision":{"type":"selected","option_id":"offered-option-id"}}` |
 | `approve_machine` | Approve a known pending machine; local machines need no approval. Remote pairing is M3. | `{"machine":"MACHINE"}` |
@@ -123,12 +132,42 @@ Permission choices must come from that request's `options`. To cancel, use
 Permissions still expire after ten minutes on the worker. An expired choice or a
 request for a completed turn cannot authorize later work.
 
-A task card represents one turn. Follow-up cards retain the same worker session
-ID and receive separate task IDs, so queued turns can be cancelled independently.
-The derived `hub/tasks/index.toml` contains only active cards; all cards remain
-available through `get_task` and `list_tasks` with `include_finished`. The file
-store rebuilds the index on opening and on every card write, reporting corrupt
-cards in the rebuild result. User configuration files are not rewritten on open.
+A card represents one piece of work and has a distinct `CardId`. Each ordered
+step is an independently queued/cancellable turn, with its own wire `task_id`,
+role, agent, machine, session, state and result summary. `dispatch` starts a new
+card unless `card_id` names an existing one. `send_to_session` appends to the
+card owning that session’s most recently submitted step unless overridden. For
+external sessions with no owning card, the first send creates one.
+
+Card state is derived: `running` if any step is running or queued, then `waiting`
+if any step waits for permission, then `failed` if the latest step failed,
+otherwise `finished`. Rejection makes the step failed; a cancelled step is
+terminal and does not by itself fail the card. Cancel uses the turn ID returned
+as `task_id`; get_task uses the card ID returned as `card_id` in its `task_id`
+argument. A hand-off can change agent and machine without changing card identity.
+
+The compact card log contains only `time` (Unix milliseconds), `kind`, `step`
+(turn ID) and `summary` (at most 200 characters). It never stores envelopes or
+tool payloads. Durable deduplication IDs and permission routing metadata live
+separately on the card and are omitted from tool results. `get_task` omits the log
+unless `include_log: true`; `list_tasks` returns summaries with no steps or logs.
+Worker progress uses human-readable tool titles and status or plan text, capped
+at 200 characters and coalesced to at most one message per second per turn.
+
+`list_sessions` returns agent, adapter session ID, optional public worker session
+ID, cwd, title, updated timestamp and `navarch_started`, plus machine and `stale`.
+Adapter pagination is followed up to 500 sessions per agent; registry entries
+are preferred when merging. An external session is addressed with `agent` and
+its `adapter_session_id` passed as `session_id`. The worker canonicalizes its
+reported cwd and checks `allowed_roots` and `allowed_agents` before adoption or
+resume. Adoption allocates a public worker session ID and retains
+`navarch_started: false` in the registry.
+
+The derived `hub/tasks/index.toml` contains only active cards. The file store
+rebuilds the index on opening and on every card write. Old one-turn cards without
+per-step turn IDs are preserved, ignored on direct reads and reported as
+unreadable in listings/index rebuilds; they do not prevent current cards from
+loading. User configuration files are not rewritten on open.
 
 ## Control protocol
 
@@ -148,5 +187,5 @@ state under one hub runtime lock; file writes use same-directory temporary files
 and atomic rename. FileStore instances opened on the same canonical directory
 share a writer lock within the process.
 
-See [M2 boundary decisions](notes/m2-deviations.md) for session visibility and
-turn identity details.
+See [M2 boundary decisions](notes/m2-deviations.md) for transport and layering
+decisions.

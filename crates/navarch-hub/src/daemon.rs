@@ -120,9 +120,10 @@ async fn control_connection(hub: Hub, stream: UnixStream) -> Result<(), HubError
     let (read, mut write) = stream.into_split();
     let mut reader = BufReader::new(read);
     while let Some(line) = read_line(&mut reader).await? {
-        let result = serde_json::from_slice::<Request>(&line)
-            .map_err(HubError::from)
-            .and_then(|r| hub.request(r));
+        let result = match serde_json::from_slice::<Request>(&line) {
+            Ok(request) => hub.request_async(request).await,
+            Err(error) => Err(error.into()),
+        };
         let response = match result {
             Ok(value) => Response::Ok { value },
             Err(e) => Response::Error {

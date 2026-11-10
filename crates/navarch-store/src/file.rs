@@ -86,7 +86,8 @@ impl FileStore {
             let result = fs::read_to_string(&path)
                 .map_err(StoreError::from)
                 .and_then(|text| toml::from_str::<TaskCard>(&text).map_err(StoreError::from))
-                .and_then(|card| {
+                .and_then(|mut card| {
+                    card.derive_state();
                     if path
                         .file_stem()
                         .is_some_and(|n| n == card.id.to_string().as_str())
@@ -166,14 +167,28 @@ impl Store for FileStore {
         let _g = self.guard()?;
         self.write(&format!("roles/{name}.md"), role::format(value)?.as_bytes())
     }
-    fn task(&self, id: TaskId) -> Result<Option<TaskCard>, StoreError> {
+    fn task(&self, id: CardId) -> Result<Option<TaskCard>, StoreError> {
         let _g = self.guard()?;
-        self.read(&format!("tasks/{id}.toml"))?
-            .map(|s| toml::from_str(&s).map_err(StoreError::from))
-            .transpose()
+        let Some(text) = self.read(&format!("tasks/{id}.toml"))? else {
+            return Ok(None);
+        };
+        // Old M2 cards lack per-step turn IDs. Keep the file intact and report it
+        // in scans, but ignore it on direct reads instead of crashing the daemon.
+        let raw: toml::Value = toml::from_str(&text).map_err(StoreError::from)?;
+        if raw
+            .get("steps")
+            .and_then(toml::Value::as_array)
+            .is_some_and(|steps| steps.iter().any(|s| s.get("task_id").is_none()))
+        {
+            return Ok(None);
+        }
+        let mut card: TaskCard = toml::from_str(&text).map_err(StoreError::from)?;
+        card.derive_state();
+        Ok(Some(card))
     }
-    fn put_task(&self, value: TaskCard) -> Result<(), StoreError> {
+    fn put_task(&self, mut value: TaskCard) -> Result<(), StoreError> {
         let _g = self.guard()?;
+        value.derive_state();
         self.write_toml(&format!("tasks/{}.toml", value.id), &value)?;
         self.rebuild()?;
         Ok(())

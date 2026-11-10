@@ -17,7 +17,7 @@ pub enum WorkerError {
     #[error(transparent)]
     Policy(#[from] navarch_policy::PolicyError),
     /// Agent failure.
-    #[error("{0}")]
+    #[error(transparent)]
     Driver(#[from] navarch_acp::DriverError),
     /// Runtime refused an invalid operation.
     #[error("{0}")]

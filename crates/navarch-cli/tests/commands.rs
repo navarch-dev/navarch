@@ -68,3 +68,33 @@ fn hub_commands_parse_and_missing_daemon_is_clear() {
             .contains("start `navarch hub serve`")
     );
 }
+
+#[test]
+fn long_navarch_home_reports_socket_path_limit_and_remedy_once() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("x".repeat(180));
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_navarch"))
+        .env("NAVARCH_HOME", &home)
+        .args(["hub", "serve"])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let error = String::from_utf8(output.stderr).unwrap();
+    assert!(
+        error.contains(&home.join("hub-worker.sock").display().to_string()),
+        "{error}"
+    );
+    assert!(
+        error.contains("limit") && error.contains("bytes"),
+        "{error}"
+    );
+    assert_eq!(error.matches("too long").count(), 1, "{error}");
+    assert_eq!(
+        error
+            .matches("set NAVARCH_HOME to a shorter directory")
+            .count(),
+        1,
+        "{error}"
+    );
+    assert!(!error.contains("SUN_LEN"));
+}

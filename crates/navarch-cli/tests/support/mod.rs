@@ -47,6 +47,7 @@ pub struct Fixture {
     pub store: Arc<dyn Store>,
     pub hub: Hub,
     pub worker: Worker,
+    pub driver: Arc<FakeDriver>,
     local: MachineId,
     hello: LocalHello,
     reconnect: mpsc::UnboundedSender<Box<dyn Link>>,
@@ -89,13 +90,18 @@ impl Fixture {
         };
         let mut policy = Policy::parse("allowed_agents=['fake']\ndefault='escalate'").unwrap();
         policy.allowed_roots = vec![temp.path().canonicalize().unwrap()];
+        let driver = std::sync::OnceLock::new();
         let (worker, streams) = Worker::with_factory(
             config,
             policy,
             Registry::load(temp.path()).unwrap(),
             None,
             Arc::new(TokioClock),
-            |_, permissions| Arc::new(FakeDriver::new(scripts.clone(), permissions)),
+            |_, permissions| {
+                let fake = Arc::new(FakeDriver::new(scripts.clone(), permissions));
+                driver.set(fake.clone()).ok();
+                fake
+            },
         )
         .unwrap();
         let (hub_link, worker_link) = memory_pair(local.clone(), machine.clone());
@@ -123,6 +129,7 @@ impl Fixture {
             store,
             hub,
             worker,
+            driver: driver.get().unwrap().clone(),
             local,
             hello,
             reconnect: wt,
@@ -154,6 +161,8 @@ impl Fixture {
         self.task_id(
             self.hub
                 .request(Request::SendToSession {
+                    card_id: None,
+                    agent: None,
                     machine: self.machine(),
                     session_id: session.into(),
                     prompt: "again".into(),
@@ -164,15 +173,18 @@ impl Fixture {
     pub fn task_id(&self, value: Value) -> TaskId {
         serde_json::from_value(value["task_id"].clone()).unwrap()
     }
+    pub fn turn_card(&self, id: TaskId) -> TaskCard {
+        self.store
+            .tasks()
+            .unwrap()
+            .0
+            .into_iter()
+            .find(|c| c.steps.iter().any(|s| s.task_id == id))
+            .unwrap()
+    }
     pub async fn card(&self, id: TaskId, state: &str) -> TaskCard {
-        wait(|| {
-            self.store
-                .task(id)
-                .unwrap()
-                .is_some_and(|c| c.state == state)
-        })
-        .await;
-        self.store.task(id).unwrap().unwrap()
+        wait(|| self.turn_card(id).state == state).await;
+        self.turn_card(id)
     }
     pub async fn restart(&mut self) {
         if !self.hub_task.is_finished() {

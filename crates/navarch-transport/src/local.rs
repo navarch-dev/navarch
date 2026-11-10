@@ -13,6 +13,7 @@ use tokio_util::codec::{Framed, LengthDelimitedCodec};
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct LocalHello {
     /// Ed25519 public key from which the address is derived.
+    #[serde(with = "navarch_proto::public_key")]
     pub public_key: [u8; 32],
     /// Worker or hub display name.
     pub display_name: String,
@@ -86,6 +87,7 @@ impl LocalLink {
     }
     /// Connect and exchange local public identity information.
     pub async fn connect(path: &Path, local: &LocalHello) -> Result<Self, LinkError> {
+        validate_socket_path(path)?;
         Ok(hello(UnixStream::connect(path).await?, local).await?.0)
     }
 }

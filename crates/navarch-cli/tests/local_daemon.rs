@@ -49,7 +49,7 @@ async fn ready(socket: &Path) {
     .await
     .unwrap();
 }
-async fn finished(store: &dyn Store, id: navarch_proto::TaskId) {
+async fn finished(store: &dyn Store, id: navarch_proto::CardId) {
     tokio::time::timeout(Duration::from_secs(5), async {
         while store.task(id).unwrap().unwrap().state != "finished" {
             tokio::time::sleep(Duration::from_millis(5)).await;
@@ -110,7 +110,7 @@ async fn local_worker_reconnects_and_hub_cli_reads_real_control_socket() {
     ready(&socket).await;
     let req:Request = serde_json::from_value(json!({"type":"dispatch","machine":identity.machine_id(),"agent":"fake","cwd":home,"prompt":"first"})).unwrap();
     let task =
-        serde_json::from_value(control::call(&socket, &req).await.unwrap()["task_id"].clone())
+        serde_json::from_value(control::call(&socket, &req).await.unwrap()["card_id"].clone())
             .unwrap();
     let store = FileStore::open(home.join("hub")).unwrap();
     finished(&store, task).await;
@@ -126,22 +126,36 @@ async fn local_worker_reconnects_and_hub_cli_reads_real_control_socket() {
         control::call(
             &socket,
             &Request::SendToSession {
+                card_id: None,
+                agent: None,
                 machine: identity.machine_id().parse().unwrap(),
                 session_id: session,
                 prompt: "second".into(),
             },
         )
         .await
-        .unwrap()["task_id"]
+        .unwrap()["card_id"]
             .clone(),
     )
     .unwrap();
     finished(&store, task).await;
     assert_eq!(
-        store.task(task).unwrap().unwrap().steps[0].result_summary,
+        store
+            .task(task)
+            .unwrap()
+            .unwrap()
+            .steps
+            .last()
+            .unwrap()
+            .result_summary,
         "two"
     );
-    for args in [vec!["hub", "status"], vec!["hub", "tasks", "--all"]] {
+    for (args, json, header) in [
+        (vec!["hub", "status", "--json"], true, "MACHINE"),
+        (vec!["hub", "tasks", "--all", "--json"], true, "CARD"),
+        (vec!["hub", "status"], false, "MACHINE"),
+        (vec!["hub", "tasks", "--all"], false, "CARD"),
+    ] {
         let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_navarch"))
             .env("NAVARCH_HOME", home)
             .args(args)
@@ -149,7 +163,17 @@ async fn local_worker_reconnects_and_hub_cli_reads_real_control_socket() {
             .await
             .unwrap();
         assert!(output.status.success());
-        let _: Value = serde_json::from_slice(&output.stdout).unwrap();
+        if json {
+            let _: Value = serde_json::from_slice(&output.stdout).unwrap();
+        } else {
+            let table = String::from_utf8(output.stdout).unwrap();
+            assert!(table.starts_with(header), "{table}");
+            assert!(table.contains(if header == "CARD" {
+                "finished"
+            } else {
+                "same machine"
+            }));
+        }
     }
     worker_task.0.abort();
     let _ = (&mut worker_task.0).await;

@@ -15,10 +15,10 @@ impl AcpDriver {
                 .on_receive_notification(
                     async move |notification: acp::SessionNotification, _cx| {
                         let mut streams = streams.lock().await;
-                        if let Some((sink, result, reset)) =
+                        if let Some((sink, result, reset, tools)) =
                             streams.get_mut(&notification.session_id.to_string())
                         {
-                            let event = event(notification.update);
+                            let event = event(notification.update, tools);
                             if let AgentEvent::ToolCall(_) = &event {
                                 *reset = true;
                             }

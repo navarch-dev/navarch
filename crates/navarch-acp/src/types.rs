@@ -53,6 +53,9 @@ pub struct SessionInfo {
     pub cwd: PathBuf,
     /// Optional display title.
     pub title: Option<String>,
+    /// Adapter-provided update timestamp.
+    #[serde(default)]
+    pub updated_at: Option<String>,
 }
 /// Reduced agent update.
 #[derive(Clone, Debug, PartialEq, Eq)]

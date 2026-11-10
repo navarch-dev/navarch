@@ -1,6 +1,6 @@
 //! MCP-independent, line-delimited JSON control protocol.
 use crate::HubError;
-use navarch_proto::{MachineId, McpServer, PermissionDecision, TaskId};
+use navarch_proto::{CardId, MachineId, McpServer, PermissionDecision, TaskId};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use tokio::{
@@ -14,13 +14,17 @@ use uuid::Uuid;
 pub enum Request {
     /// Known workers, last capabilities and current online state.
     ListWorkers,
-    /// Sessions observed by this hub, optionally filtered by machine.
+    /// Query resumable worker and adapter sessions, with stale fallback.
     ListSessions {
         /// Optional machine filter.
         machine: Option<MachineId>,
+        /// Optional worker-local directory filter.
+        cwd: Option<PathBuf>,
     },
     /// Dispatch to an explicit machine and role or adapter.
     Dispatch {
+        /// Append a turn to this card; otherwise create a new card.
+        card_id: Option<CardId>,
         /// Target machine.
         machine: MachineId,
         /// Explicit adapter, mutually exclusive with role.
@@ -44,6 +48,10 @@ pub enum Request {
     },
     /// Add a turn to a known session, returning a new task ID for that turn.
     SendToSession {
+        /// Override the session's latest owning card.
+        card_id: Option<CardId>,
+        /// Adapter name when session_id is an external adapter session ID.
+        agent: Option<String>,
         /// Target machine.
         machine: MachineId,
         /// Worker session ID.
@@ -58,12 +66,16 @@ pub enum Request {
     },
     /// Read one task card.
     GetTask {
-        /// Task identifier.
-        task_id: TaskId,
+        /// Card identifier (the dispatch response’s card_id).
+        #[serde(alias = "card_id")]
+        task_id: CardId,
+        /// Include compact event history; defaults to false.
+        #[serde(default)]
+        include_log: bool,
     },
     /// Read task cards, optionally including terminal states.
     ListTasks {
-        /// Include completed, failed and rejected cards.
+        /// Include finished and failed cards.
         #[serde(default)]
         include_finished: bool,
     },
@@ -99,6 +111,7 @@ pub enum Response {
 }
 /// Send one control request to a daemon. No state is retained by this client.
 pub async fn call(path: &Path, request: &Request) -> Result<serde_json::Value, HubError> {
+    navarch_transport::validate_socket_path(path)?;
     let stream = UnixStream::connect(path).await.map_err(|e| {
         HubError::Invalid(format!(
             "cannot connect to hub daemon at {}: {e}; start `navarch hub serve`",
