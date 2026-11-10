@@ -235,3 +235,47 @@ fn card_ids_and_summary_bounds() {
     assert_eq!(short_summary("  hello\n world "), "hello world");
     assert_eq!(short_summary(&"界".repeat(201)).chars().count(), 200);
 }
+
+#[test]
+fn relay_routing_matches_design_and_rejects_ambiguous_controls() {
+    use navarch_proto::relay::{OfflineError, RelayRequest, RelayResponse};
+    let id: MachineId = "aaaaaaaaaaaaaaaaaaaaaaaaaa".parse().unwrap();
+    let route = RelayRequest::Route {
+        to: id.clone(),
+        payload: "YWJj".into(),
+    };
+    let value = serde_json::to_value(&route).unwrap();
+    assert_eq!(value, serde_json::json!({"to":id,"payload":"YWJj"}));
+    assert!(matches!(
+        serde_json::from_value::<RelayRequest>(value).unwrap(),
+        RelayRequest::Route { .. }
+    ));
+    let offline = serde_json::to_value(RelayResponse::Offline {
+        to: id.clone(),
+        error: OfflineError::Offline,
+    })
+    .unwrap();
+    assert_eq!(offline, serde_json::json!({"error":"offline","to":id}));
+    assert!(matches!(
+        serde_json::from_value::<RelayResponse>(offline).unwrap(),
+        RelayResponse::Offline { .. }
+    ));
+    let routed = serde_json::to_value(RelayResponse::Routed {
+        from: id.clone(),
+        payload: "YWJj".into(),
+    })
+    .unwrap();
+    assert_eq!(routed, serde_json::json!({"from":id,"payload":"YWJj"}));
+    assert!(matches!(
+        serde_json::from_value::<RelayResponse>(routed).unwrap(),
+        RelayResponse::Routed { .. }
+    ));
+    for value in [
+        serde_json::json!({"to":id,"payload":"", "type":"room_fail"}),
+        serde_json::json!({"type":"room_join","room":"1234","step":1}),
+        serde_json::json!({"type":"unknown"}),
+        serde_json::json!({"to":id,"payload":null}),
+    ] {
+        assert!(serde_json::from_value::<RelayRequest>(value).is_err());
+    }
+}

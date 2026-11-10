@@ -31,6 +31,7 @@ fn round_trip(store: &dyn Store) {
     let machine = Machine {
         id: "aaaaaaaaaaaaaaaaaaaaaaaaaa".parse().unwrap(),
         public_key: [0; 32],
+        static_public_key: None,
         display_name: "local".into(),
         state: MachineState::Active,
         capabilities: Some(Capabilities::default()),
@@ -152,6 +153,7 @@ fn concurrent(stores: Vec<Arc<dyn Store>>) {
                     .put_machine(Machine {
                         id: id.clone(),
                         public_key,
+                        static_public_key: None,
                         display_name: i.to_string(),
                         state: MachineState::Active,
                         capabilities: None,
@@ -255,6 +257,7 @@ fn public_keys_write_hex_and_read_legacy_arrays() {
     let machine = Machine {
         id: data_id(0),
         public_key: [171; 32],
+        static_public_key: None,
         display_name: "test".into(),
         state: MachineState::Active,
         capabilities: None,

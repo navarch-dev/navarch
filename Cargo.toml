@@ -31,6 +31,15 @@ bytes = "1"
 futures-util = { version = "0.3", features = ["sink"] }
 tokio-util = { version = "0.7", features = ["codec"] }
 rand = "0.8"
+x25519-dalek = { version = "2", features = ["static_secrets", "getrandom", "zeroize"] }
+spake2 = "0.4"
+snow = "0.10"
+chacha20poly1305 = "0.10"
+zeroize = { version = "1", features = ["derive"] }
+base64 = "0.22"
+axum = { version = "0.8", features = ["ws"] }
+tokio-tungstenite = { version = "0.29", features = ["rustls-tls-webpki-roots"] }
+navarch-relay = { path = "crates/navarch-relay" }
 ed25519-dalek = { version = "2", features = ["rand_core"] }
 blake2 = "0.10"
 rmcp = { version = "1", default-features = false, features = ["server", "transport-io"] }

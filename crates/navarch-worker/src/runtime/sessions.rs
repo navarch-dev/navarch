@@ -82,8 +82,8 @@ impl Worker {
                         }
                     }
                 }
-                Err(error) => {
-                    tracing::warn!(%agent, %error, "session discovery unavailable; retaining registry sessions")
+                Err(_) => {
+                    tracing::warn!("session discovery unavailable; retaining registry sessions")
                 }
             }
             result.extend(merged.into_values());

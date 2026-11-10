@@ -45,7 +45,7 @@ impl ReconnectingLink {
                 }
                 Err(error) => {
                     tracing::warn!(%error, "link connection failed; retrying");
-                    let millis = rand::thread_rng()
+                    let millis = rand::rngs::OsRng
                         .gen_range(self.delay * 1000..=(self.delay * 1500).min(60_000));
                     tokio::time::sleep(Duration::from_millis(millis)).await;
                     self.delay = (self.delay * 2).min(60);

@@ -92,7 +92,7 @@ pub(super) fn tools() -> Vec<Tool> {
         ),
         tool(
             "approve_machine",
-            "Approve an already known pending machine. Local workers are active automatically. Pairing and remote connections are introduced in M3.",
+            "Approve an already known pending machine. Local workers are active automatically. Remote machines remain pending until approved.",
             json!({"machine":machine}),
             &["machine"],
         ),

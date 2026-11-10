@@ -74,6 +74,7 @@ async fn local_worker_reconnects_and_hub_cli_reads_real_control_socket() {
     policy.allowed_roots = vec![home.canonicalize().unwrap()];
     let (worker, streams) = Worker::with_factory(
         Config {
+            local_hub_socket: None,
             display_name: "fake".into(),
             agents: vec![AgentConfig {
                 name: "fake".into(),

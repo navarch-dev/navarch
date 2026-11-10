@@ -35,6 +35,7 @@ impl Fixture {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().canonicalize().unwrap();
         let config = Config {
+            local_hub_socket: None,
             display_name: "test".into(),
             agents: vec![AgentConfig {
                 name: "fake".into(),
@@ -327,6 +328,7 @@ async fn registry_survives_worker_restart_and_resumes_lazily() {
 impl Fixture {
     fn worker_config(&self) -> Config {
         Config {
+            local_hub_socket: None,
             display_name: "test".into(),
             agents: vec![AgentConfig {
                 name: "fake".into(),
@@ -453,6 +455,7 @@ fn filesystem_resolution_rejects_symlink_escape_and_traversal() {
 async fn probe_discovers_versions_and_models_from_throwaway_session() {
     let temp = tempfile::tempdir().unwrap();
     let config = Config {
+        local_hub_socket: None,
         display_name: "test".into(),
         agents: vec![AgentConfig {
             name: "fake".into(),
@@ -530,6 +533,7 @@ async fn cancelling_permission_wait_cancels_turn() {
 async fn different_adapters_with_same_session_id_route_turns_and_permissions() {
     let temp = tempfile::tempdir().unwrap();
     let config = Config {
+        local_hub_socket: None,
         display_name: "test".into(),
         agents: ["a", "b"]
             .into_iter()

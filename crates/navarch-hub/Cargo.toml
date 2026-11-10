@@ -7,6 +7,9 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+rand.workspace = true
+bytes.workspace = true
+
 async-trait.workspace = true
 navarch-proto.workspace = true
 navarch-store.workspace = true

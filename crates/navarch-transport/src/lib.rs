@@ -1,4 +1,4 @@
-//! Local framing and shared reliable envelope delivery. RelayLink belongs to M3.
+//! Local and encrypted relay links with shared reliable envelope delivery.
 #![forbid(unsafe_code)]
 mod local;
 mod memory;
@@ -49,3 +49,11 @@ pub trait Link: Send {
     /// Address of the connected peer.
     fn peer(&self) -> &MachineId;
 }
+
+mod relay;
+mod relay_socket;
+pub use relay::{RelayAuthorization, RelayConnector, RelayLink, RelayListener};
+pub use relay_socket::RelaySocket;
+
+mod pairing;
+pub use pairing::{open_pair_room, pair_room};

@@ -30,11 +30,44 @@ enum Command {
         command: navarch_cli::worker::WorkerCommand,
     },
     /// Run the relay.
-    Relay,
+    Relay {
+        #[command(subcommand)]
+        command: RelayCommand,
+    },
     /// Create a pairing code.
-    Pair,
+    Pair {
+        #[arg(long)]
+        relay: Option<String>,
+    },
     /// Join a hub using a pairing code.
-    Join,
+    Join {
+        code: String,
+        #[arg(long)]
+        relay: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum RelayCommand {
+    /// Serve opaque WebSocket routing (terminate TLS in front).
+    Serve {
+        #[arg(long)]
+        listen: std::net::SocketAddr,
+    },
+}
+async fn remote(command: Command) -> anyhow::Result<u8> {
+    match command {
+        Command::Pair { relay } => navarch_cli::remote::pair(relay).await,
+        Command::Join { code, relay } => navarch_cli::remote::join(code, relay).await,
+        Command::Relay {
+            command: RelayCommand::Serve { listen },
+        } => {
+            let listener = tokio::net::TcpListener::bind(listen).await?;
+            tokio::select! {result=navarch_relay::serve(listener)=>result?,result=tokio::signal::ctrl_c()=>result?};
+            Ok(0)
+        }
+        _ => anyhow::bail!("invalid remote command"),
+    }
 }
 
 #[tokio::main]
@@ -59,9 +92,12 @@ async fn main() -> ExitCode {
                 ExitCode::from(1)
             }
         },
-        _ => {
-            eprintln!("not implemented yet");
-            ExitCode::from(2)
-        }
+        command => match remote(command).await {
+            Ok(code) => ExitCode::from(code),
+            Err(error) => {
+                eprintln!("{error:#}");
+                ExitCode::from(1)
+            }
+        },
     }
 }

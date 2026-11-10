@@ -28,8 +28,28 @@ pub enum HubCommand {
         #[arg(long)]
         all: bool,
     },
+    /// List machines or change approval state.
+    Machines {
+        /// Optional approval action.
+        #[command(subcommand)]
+        action: Option<MachineAction>,
+    },
     /// Write commented example configuration; never overwrite existing files.
     Init,
+}
+/// Machine approval commands.
+#[derive(Subcommand)]
+pub enum MachineAction {
+    /// Approve a pending machine.
+    Approve {
+        /// Machine ID.
+        id: navarch_proto::MachineId,
+    },
+    /// Immediately revoke a known machine.
+    Revoke {
+        /// Machine ID.
+        id: navarch_proto::MachineId,
+    },
 }
 /// Execute one hub command.
 pub async fn run(command: HubCommand) -> Result<u8> {
@@ -44,7 +64,28 @@ pub async fn run(command: HubCommand) -> Result<u8> {
                 public_key: identity.public_key(),
                 display_name: "hub".into(),
             };
-            tokio::select! { result = navarch_hub::serve(&home,hello,store) => result?, result = tokio::signal::ctrl_c() => result? }
+            let remote = crate::remote::HubConfig::load(&home)?
+                .relay
+                .map(|url| -> Result<_> {
+                    Ok(navarch_hub::RemoteRelay {
+                        url,
+                        identity: Arc::new(identity),
+                        static_key: Arc::new(navarch_crypto::StaticKey::load_or_create(&home)?),
+                    })
+                })
+                .transpose()?;
+            tokio::select! { result = navarch_hub::serve_with_relay(&home,hello,store,remote) => result?, result = tokio::signal::ctrl_c() => result? }
+        }
+        HubCommand::Machines { action } => {
+            let request = match action {
+                None => Request::ListWorkers,
+                Some(MachineAction::Approve { id }) => Request::ApproveMachine { machine: id },
+                Some(MachineAction::Revoke { id }) => Request::RevokeMachine { machine: id },
+            };
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&control::call(&socket, &request).await?)?
+            );
         }
         HubCommand::Mcp => navarch_hub::serve_mcp(&socket).await?,
         HubCommand::Status { json } => {

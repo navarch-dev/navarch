@@ -44,6 +44,7 @@ impl Hub {
     /// Record a local peer. First local connection is automatically active;
     /// an existing revoked machine remains revoked.
     pub fn register_local(&self, hello: &LocalHello) -> Result<MachineId, HubError> {
+        let _state = self.state()?;
         let id = hello.machine_id()?;
         let mut machine = self
             .store
@@ -53,6 +54,7 @@ impl Hub {
             .unwrap_or(Machine {
                 id: id.clone(),
                 public_key: hello.public_key,
+                static_public_key: None,
                 display_name: hello.display_name.clone(),
                 state: MachineState::Active,
                 capabilities: None,

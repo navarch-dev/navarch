@@ -241,8 +241,8 @@ Both sides reconnect with exponential backoff (1 s to 60 s, jittered). After a r
 
 1. `navarch pair` on the hub creates a code `RRRR-SSSSSS`: a 4-digit room and a 6-digit secret, valid for 10 minutes. The hub joins room `RRRR` on the relay.
 2. `navarch join RRRR-SSSSSS --relay <url>` on the new machine joins the same room.
-3. Both run SPAKE2 with the secret as the password, then confirm the derived key with a MAC over the transcript. One failed attempt closes the room.
-4. Over that key (ChaCha20-Poly1305), they exchange identity public keys, X25519 static public keys and display names.
+3. Both run SPAKE2 with the secret as the password. Over a domain-separated key derived from its result (ChaCha20-Poly1305), they exchange identity public keys, X25519 static public keys and display names.
+4. They mutually confirm with role-separated keyed BLAKE2s MACs over both roles, room, both ordered SPAKE2 messages and both complete introductions. Nothing is persisted before peer confirmation. Any failed, malformed, replayed, expired or out-of-order message destroys the attempt and closes the room. See `docs/security.md` and `docs/notes/m3-open-questions.md` for the precise transcript and conservative ordering clarification.
 5. The hub stores the machine as `pending`. It becomes `active` only after `approve_machine`.
 
 The relay sees the room number and ciphertext. It cannot derive the key.
@@ -251,7 +251,7 @@ The relay sees the room number and ciphertext. It cannot derive the key.
 
 - After pairing, hub and worker talk over a Noise session, pattern `Noise_KK_25519_ChaChaPoly_BLAKE2s` (`snow` crate): both sides already know each other's static key, so the handshake authenticates both and gives forward secrecy.
 - Each side has an X25519 static key for Noise in addition to the Ed25519 identity key. Both public keys are exchanged during pairing.
-- Handshake and transport messages are carried as relay frames. A new handshake runs after every reconnect.
+- Handshake and transport messages are carried as relay frames. A new handshake runs after every reconnect. Fresh worker/hub connection nonces and both role addresses are bound through the standard Noise prologue to reject replayed first KK messages even after restart. Envelopes are split into ordered Noise records containing encrypted total-length and offset headers with at most 48 KiB of envelope data, preserving the 1 MiB envelope limit within Noise/base64/JSON frame limits.
 - The hub ignores any worker whose machine is not `active`.
 
 ## 11. Relay (`navarch-relay`)
@@ -259,7 +259,7 @@ The relay sees the room number and ciphertext. It cannot derive the key.
 - A WebSocket server (`/v1/ws`). Plain HTTP; terminate TLS in front of it.
 - On connect the relay sends a random challenge; the client replies with its Ed25519 public key and a signature. The relay derives the `MachineId` from the key, so IDs cannot be spoofed.
 - Routing frame: `{ "to": MachineId, "payload": base64 }`. The relay forwards to the connection registered for `to`, adding `from`. If `to` is offline the sender gets `{ "error": "offline", "to": ... }`. Nothing is buffered or written to disk.
-- Pairing rooms: `{ "room": "RRRR", ... }` frames connect exactly two clients. Rooms expire after 10 minutes or one failed confirmation.
+- Pairing rooms: `{ "room": "RRRR", ... }` frames connect exactly two clients. Rooms expire after 10 minutes or one failed confirmation. Room numbers remain tombstoned for the relay process lifetime; a restart invalidates outstanding rooms.
 - Limits: 1 MiB per frame, 60 frames per second and 16 MiB per minute per connection, one connection per machine ID (a new one replaces the old).
 - Logs contain machine IDs and sizes, never payloads.
 
@@ -267,7 +267,7 @@ The relay sees the room number and ciphertext. It cannot derive the key.
 
 | Attacker | Can | Cannot |
 |---|---|---|
-| Malicious relay | See who talks to whom and when; drop or delay frames | Read or forge messages; join as a machine |
+| Malicious relay | See who talks to whom and when; forge routing metadata; drop, replay or delay frames | Read plaintext or forge authenticated end-to-end messages as a pinned machine |
 | Someone who learns a pairing code later | Nothing; the room is closed | — |
 | Someone who guesses during the 10 minutes | One online guess per room (1 in 10^6) | Stay undetected: a failed guess closes the room, and the machine still needs approval |
 | Compromised hub | Send tasks to workers | Exceed each worker's local policy; run arbitrary commands |

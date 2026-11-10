@@ -92,6 +92,16 @@ pub enum Request {
         /// Offered choice or cancellation.
         decision: PermissionDecision,
     },
+    /// Save a locally completed pairing through the daemon state owner.
+    RegisterPaired {
+        /// Confirmed public introduction, from the local pairing CLI.
+        peer: navarch_crypto::PairInfo,
+    },
+    /// Revoke an existing machine immediately.
+    RevokeMachine {
+        /// Machine identifier.
+        machine: MachineId,
+    },
     /// Approve a known pending machine.
     ApproveMachine {
         /// Machine identifier.

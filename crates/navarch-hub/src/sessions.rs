@@ -206,6 +206,7 @@ mod tests {
             .put_machine(Machine {
                 id: machine.clone(),
                 public_key: [0; 32],
+                static_public_key: None,
                 display_name: "test".into(),
                 state: MachineState::Active,
                 capabilities: None,

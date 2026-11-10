@@ -80,6 +80,7 @@ impl Fixture {
         };
         let machine = hello.machine_id().unwrap();
         let config = Config {
+            local_hub_socket: None,
             display_name: "fake".into(),
             agents: vec![AgentConfig {
                 name: "fake".into(),

@@ -230,3 +230,24 @@ pub mod public_key {
         }
     }
 }
+
+/// Opaque relay protocol types.
+pub mod relay;
+
+/// Optional lowercase-hex public keys, preserving absent M2 local-key records.
+pub mod optional_public_key {
+    use serde::{Deserialize, Deserializer, Serializer};
+    /// Write an optional key using the canonical public key format.
+    pub fn serialize<S: Serializer>(key: &Option<[u8; 32]>, s: S) -> Result<S::Ok, S::Error> {
+        match key {
+            Some(key) => super::public_key::serialize(key, s),
+            None => s.serialize_none(),
+        }
+    }
+    /// Read an optional canonical or legacy public key.
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Option<[u8; 32]>, D::Error> {
+        #[derive(Deserialize)]
+        struct Key(#[serde(with = "super::public_key")] [u8; 32]);
+        Option::<Key>::deserialize(d).map(|k| k.map(|k| k.0))
+    }
+}

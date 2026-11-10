@@ -10,3 +10,6 @@ pub mod worker;
 pub mod hub;
 
 mod terminal;
+
+/// Remote pairing and relay configuration.
+pub mod remote;

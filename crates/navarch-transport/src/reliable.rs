@@ -174,7 +174,7 @@ async fn connected(
                 send(link, &envelope).await?;
             }
             frame = link.recv() => {
-                let envelope: Envelope = serde_json::from_slice(&frame?).map_err(|e| LinkError::Protocol(e.to_string()))?;
+                let envelope: Envelope = serde_json::from_slice(&frame?).map_err(|_| LinkError::Protocol("invalid envelope".into()))?;
                 envelope.check_version().map_err(|e| LinkError::Protocol(e.to_string()))?;
                 if envelope.from != *peer || envelope.to != *local { return Err(LinkError::Protocol("envelope address does not match link".into())); }
                 if let Body::Ack { of } = envelope.body { pending.retain(|e| e.id != of); continue; }

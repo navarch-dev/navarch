@@ -22,6 +22,9 @@ pub struct Machine {
     /// Ed25519 public key.
     #[serde(with = "navarch_proto::public_key")]
     pub public_key: [u8; 32],
+    /// Paired X25519 static public key; absent on legacy/local records.
+    #[serde(default, with = "navarch_proto::optional_public_key")]
+    pub static_public_key: Option<[u8; 32]>,
     /// Display name.
     pub display_name: String,
     /// Approval state.

@@ -14,7 +14,7 @@ use tokio::{
     task::JoinSet,
 };
 
-struct Incoming(mpsc::UnboundedReceiver<Box<dyn Link>>);
+pub(crate) struct Incoming(pub(crate) mpsc::UnboundedReceiver<Box<dyn Link>>);
 #[async_trait::async_trait]
 impl Connector for Incoming {
     async fn connect(&mut self) -> Result<Box<dyn Link>, LinkError> {
@@ -31,6 +31,19 @@ impl Hub {
         connector: Box<dyn Connector>,
     ) -> Result<(), HubError> {
         let machine = self.register_local(&hello)?;
+        self.run_peer(local, machine, connector).await
+    }
+    /// Serve a previously paired active remote using the existing delivery path.
+    pub async fn run_peer(
+        &self,
+        local: MachineId,
+        machine: MachineId,
+        connector: Box<dyn Connector>,
+    ) -> Result<(), HubError> {
+        let connector = Box::new(crate::remote::ActiveConnector {
+            hub: self.clone(),
+            inner: connector,
+        });
         let (sender, mut events, _task) = reliable(local, connector, 4096);
         let mut token = None;
         struct Detach {
@@ -58,6 +71,7 @@ impl Hub {
                             "local introduction and link address differ".into(),
                         ));
                     }
+                    self.require_active(&machine)?;
                     token = Some(self.attach(machine.clone(), sender.clone())?);
                     cleanup.token = token;
                 }
@@ -84,12 +98,26 @@ pub async fn serve(
     hello: LocalHello,
     store: Arc<dyn navarch_store::Store>,
 ) -> Result<(), HubError> {
+    serve_with_relay(home, hello, store, None).await
+}
+/// Serve local sockets and optionally maintain a remote relay connection.
+pub async fn serve_with_relay(
+    home: &Path,
+    hello: LocalHello,
+    store: Arc<dyn navarch_store::Store>,
+    remote: Option<crate::RemoteRelay>,
+) -> Result<(), HubError> {
     let local = hello.machine_id()?;
     let workers = Arc::new(LocalListener::bind(&home.join("hub-worker.sock"), hello)?);
     let control = PrivateListener::bind(&home.join("hub.sock"))?;
     let hub = Hub::new(store);
     let mut peers: HashMap<MachineId, mpsc::UnboundedSender<Box<dyn Link>>> = HashMap::new();
     let mut tasks = JoinSet::new();
+    if let Some(remote) = remote {
+        let hub = hub.clone();
+        let local = local.clone();
+        tasks.spawn(async move { hub.serve_relay(local, remote).await });
+    }
     // Handshakes run separately so a stalled client cannot block control requests.
     let mut accepts = JoinSet::new();
     let listener = workers.clone();

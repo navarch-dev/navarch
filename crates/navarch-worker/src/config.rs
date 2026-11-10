@@ -61,6 +61,8 @@ fn executable(path: &Path) -> bool {
 pub struct Config {
     /// Display name for capability reports.
     pub display_name: String,
+    /// Optional explicit local hub socket; takes precedence over paired relay settings.
+    pub local_hub_socket: Option<PathBuf>,
     /// Configured adapters.
     pub agents: Vec<AgentConfig>,
 }

@@ -107,16 +107,15 @@ pub async fn run(command: WorkerCommand) -> Result<u8> {
     let (worker, streams) = Worker::load(&home, &user_home, escalation)?;
     match command {
         WorkerCommand::Serve => {
-            let identity = navarch_crypto::Identity::load_or_create(&home)?;
+            let identity = Arc::new(navarch_crypto::Identity::load_or_create(&home)?);
             let config = navarch_worker::config::Config::load(&home)?;
-            let connector = navarch_transport::LocalConnector {
-                path: home.join("hub-worker.sock"),
-                hello: navarch_transport::LocalHello {
-                    public_key: identity.public_key(),
-                    display_name: config.display_name,
-                },
-            };
-            tokio::select! {result = navarch_worker::serve(worker, streams, identity.machine_id().parse()?, Box::new(connector)) => result?, result = tokio::signal::ctrl_c() => result?}
+            let connector = crate::remote::worker_connector(
+                &home,
+                identity.clone(),
+                config.local_hub_socket,
+                config.display_name,
+            )?;
+            tokio::select! {result = navarch_worker::serve(worker, streams, identity.machine_id().parse()?, connector) => result?, result = tokio::signal::ctrl_c() => result?}
             Ok(0)
         }
         WorkerCommand::Run {

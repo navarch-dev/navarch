@@ -93,6 +93,7 @@ fn unknown_machine_and_pending_or_revoked_are_refused() {
                 .put_machine(Machine {
                     id: machine.clone(),
                     public_key: [0; 32],
+                    static_public_key: None,
                     display_name: String::new(),
                     state,
                     capabilities: None,
@@ -122,6 +123,7 @@ fn cross_machine_events_update_their_own_steps_and_card_state_is_derived() {
             .put_machine(Machine {
                 id: machine.clone(),
                 public_key: [0; 32],
+                static_public_key: None,
                 display_name: "test".into(),
                 state: MachineState::Active,
                 capabilities: None,

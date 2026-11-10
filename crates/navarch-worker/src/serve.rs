@@ -33,8 +33,8 @@ pub async fn serve(
                 Some(ReliableEvent::Message(delivery)) => {
                     // Rejections are emitted by Worker itself; they still count as
                     // applied commands and must not create another session on retry.
-                    if let Err(error) = worker.handle(delivery.envelope.body.clone()).await {
-                        tracing::warn!(%error,"worker refused hub command");
+                    if worker.handle(delivery.envelope.body.clone()).await.is_err() {
+                        tracing::warn!("worker refused hub command");
                     }
                     delivery.complete(true);
                 }

@@ -203,6 +203,13 @@ impl Hub {
                 request_id,
                 decision,
             } => self.answer(&state, request_id, decision),
+            Request::RegisterPaired { peer } => Ok(json!({"machine":self.put_paired(peer)?})),
+            Request::RevokeMachine { machine } => {
+                let mut machine = self.machine(&machine)?;
+                machine.state = MachineState::Revoked;
+                self.store.put_machine(machine)?;
+                Ok(json!({"revoked":true}))
+            }
             Request::ApproveMachine { machine } => {
                 let mut machine = self.machine(&machine)?;
                 if machine.state == MachineState::Revoked {

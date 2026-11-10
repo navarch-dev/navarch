@@ -29,6 +29,7 @@ async fn rmcp_handshake_tool_discovery_forwarding_and_errors() {
         .put_machine(navarch_store::Machine {
             id: hello.machine_id().unwrap(),
             public_key: [171; 32],
+            static_public_key: None,
             display_name: "test".into(),
             state: navarch_store::MachineState::Active,
             capabilities: None,

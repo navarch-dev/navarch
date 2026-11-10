@@ -7,9 +7,11 @@ mod init;
 mod mcp;
 mod requests;
 mod runtime;
-pub use daemon::serve;
+pub use daemon::{serve, serve_with_relay};
+mod remote;
 pub use init::init;
 pub use mcp::serve_mcp;
+pub use remote::RemoteRelay;
 pub use runtime::Hub;
 /// Hub validation, persistence, or connection failure.
 #[derive(Debug, thiserror::Error)]
