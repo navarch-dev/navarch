@@ -209,11 +209,23 @@ All writes are atomic. `navarch-store` exposes a `Store` trait with a file imple
 
 - `navarch hub serve` is a daemon. It holds links to workers, applies their messages to the store, and serves a control API on a Unix socket `hub.sock` (mode 0600), using line-delimited JSON requests and responses.
 - `navarch hub mcp` is a stdio MCP server (official `rmcp` crate) that the orchestrator launches. It translates tool calls to control API requests. It holds no state.
-- Tools: `list_workers`, `list_sessions`, `dispatch`, `send_to_session`, `cancel`, `get_task`, `list_tasks`, `read_inbox`, `answer_permission`, `approve_machine`.
+- Tools: `list_workers`, `list_sessions`, `dispatch`, `send_to_session`, `cancel`, `get_task`, `list_tasks`, `read_inbox`, `wait_for_events`, `answer_permission`, `approve_machine`.
 - `list_sessions` asks the worker (`ListSessions`), so it includes sessions started outside Navarch that the adapters can resume. `send_to_session` accepts such a session by agent and adapter session ID; the worker adopts it into its registry on first use, subject to `allowed_roots`.
 - Public keys are serialized as lowercase hex strings everywhere.
 - `dispatch` picks nothing by itself: the orchestrator names the machine, role or agent, cwd and prompt. Choosing is the orchestrator's job; validating is the hub's.
 - Worker events (`Finished`, `Failed`, `PermissionAsk`, `Rejected`) update the task card and append to the inbox. `read_inbox` returns and marks them read.
+
+### 8a. Events for the orchestrator
+
+The orchestrator should not have to poll. Every inbox entry has a monotonic `seq` and is also published on an in-process event bus. Three consumers sit on top of it:
+
+| Consumer | How | For |
+|---|---|---|
+| Channel | `navarch hub mcp --channel` sends the MCP notification `notifications/claude/channel` (`content`, string-only `meta`) | Claude Code sessions started with the channel enabled; the event arrives as a `<channel source="navarch" ...>` block and wakes an idle session |
+| `wait_for_events` | A tool that blocks until an unread entry newer than `after_seq` exists or a timeout elapses | Any MCP client, including ones without channels |
+| `navarch hub watch` | Control API `subscribe`, one JSON line per event | People and scripts |
+
+Events are hints, not the record: the inbox and the task cards stay authoritative, a slow subscriber is told it `lagged` and re-reads the inbox, and nothing is marked read by an event. Channel text is written by the hub from fixed templates plus bounded summaries; it never carries a permission answer, so a channel cannot approve anything.
 
 ## 9. Links (`navarch-transport`)
 
@@ -234,6 +246,20 @@ Frames are length-prefixed (u32 big-endian), at most 1 MiB.
 | `RelayLink` | Everything else, over a WebSocket to the relay | Noise channel end to end (section 10). |
 
 Both sides reconnect with exponential backoff (1 s to 60 s, jittered). After a reconnect, unacknowledged envelopes are resent.
+
+### 9a. Direct links
+
+When hub and worker can reach each other over IP (same LAN, VPN, tailnet), they skip the relay.
+
+- The hub opens a TCP listener only when `[direct] listen` is set in `hub.toml`.
+- A direct connection starts with the magic `NAVARCH-DIRECT/1\n`, then runs the same nonce exchange, the same `Noise_KK` handshake with the same prologue, and the same record chunking as `RelayLink`. There is one implementation of that handshake, shared by both links. No relay challenge is needed: Noise KK with pinned static keys authenticates both sides.
+- The hub selects the static key by the `MachineId` in the hello frame and drops unknown, pending or revoked machines before any Noise processing, without a distinguishing reply.
+- Addresses are never discovered on the network. The hub sends `HubEndpoints { direct }` inside an established channel, so only paired machines learn them and nobody in between can change them. The worker stores them and, on each reconnect, tries them (2 s each) before the relay; while on the relay it retries direct every 5 minutes and switches when it works.
+- A new authenticated link for a machine replaces the previous one. Reliable delivery (acks, resend, de-duplication) makes the switch invisible to hub and worker logic.
+
+| Link | Used for | Security |
+|---|---|---|
+| `DirectLink` | Hub and worker that can reach each other over IP | Noise channel end to end, same as `RelayLink`. |
 
 ## 10. Pairing and encryption (`navarch-crypto`)
 
@@ -270,6 +296,7 @@ The relay sees the room number and ciphertext. It cannot derive the key.
 | Malicious relay | See who talks to whom and when; forge routing metadata; drop, replay or delay frames | Read plaintext or forge authenticated end-to-end messages as a pinned machine |
 | Someone who learns a pairing code later | Attempt another room lookup or cause denial of service | Revive an expired pairing attempt or decrypt recorded pairings/channels from the code alone |
 | Someone who guesses during the 10 minutes | One online guess per room (1 in 10^6) | Stay undetected: a failed guess closes the room, and the machine still needs approval |
+| Someone on the LAN who can reach the direct port | Learn that something listens there; open connections up to the limits | Complete a handshake, learn which machines are paired, or read or forge messages |
 | Compromised hub | Send tasks to workers | Exceed each worker's local policy; run arbitrary commands |
 | Compromised worker | Lie about its results | Reach other workers; read other machines' sessions |
 
@@ -289,5 +316,13 @@ The relay sees the room number and ciphertext. It cannot derive the key.
 | M1 | `proto`, `policy`, `acp`, `worker` standalone commands |
 | M2 | `store`, `transport` (`LocalLink`), `hub` daemon, control API, MCP server, worker `serve` |
 | M3 | `crypto`, `relay`, `RelayLink`, pairing, approval, reconnect and resend |
+| M4 | Events for the orchestrator (channel, `wait_for_events`, `hub watch`), `DirectLink`, version, services, release workflow, install script |
 
 Task files are in `docs/tasks/`.
+
+## 15. Packaging
+
+- One binary, `navarch`. `navarch --version` reports the version and the commit it was built from.
+- `navarch service install|uninstall|status <hub|worker|relay>` manages a per-user service: a launchd agent on macOS, a systemd user unit on Linux. No root, no system-wide files.
+- Releases are built by CI on a version tag for macOS and Linux on x86-64 and arm64, with a `SHA256SUMS` file. `install.sh` downloads one, verifies the checksum and installs to a user directory; it never uses `sudo`.
+- The relay also ships as a container image built from `Dockerfile.relay`.
