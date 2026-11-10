@@ -22,7 +22,10 @@ enum Command {
     /// Run the hub.
     Hub,
     /// Run a worker.
-    Worker,
+    Worker {
+        #[command(subcommand)]
+        command: navarch_cli::worker::WorkerCommand,
+    },
     /// Run the relay.
     Relay,
     /// Create a pairing code.
@@ -31,8 +34,20 @@ enum Command {
     Join,
 }
 
-fn main() -> ExitCode {
-    let _cli = Cli::parse();
-    eprintln!("not implemented yet");
-    ExitCode::from(2)
+#[tokio::main]
+async fn main() -> ExitCode {
+    let cli = Cli::parse();
+    match cli.command {
+        Command::Worker { command } => match navarch_cli::worker::run(command).await {
+            Ok(code) => ExitCode::from(code),
+            Err(error) => {
+                eprintln!("{error:#}");
+                ExitCode::from(1)
+            }
+        },
+        _ => {
+            eprintln!("not implemented yet");
+            ExitCode::from(2)
+        }
+    }
 }

@@ -139,3 +139,18 @@ mod tests {
         assert!(serde_json::from_str::<TaskId>("42").is_err());
     }
 }
+
+mod messages;
+pub use messages::*;
+
+impl TaskId {
+    /// Generate a random task identifier.
+    pub fn new() -> Self {
+        Self(Uuid::new_v4())
+    }
+}
+impl Default for TaskId {
+    fn default() -> Self {
+        Self::new()
+    }
+}

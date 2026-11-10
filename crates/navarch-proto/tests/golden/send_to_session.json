@@ -1,0 +1,12 @@
+{
+  "v": 1,
+  "id": "00000000-0000-4000-8000-000000000001",
+  "from": "aaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "to": "77777777777777777777777774",
+  "body": {
+    "type": "send_to_session",
+    "task_id": "00000000-0000-4000-8000-000000000001",
+    "session_id": "s",
+    "prompt": "next"
+  }
+}

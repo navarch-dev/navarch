@@ -1,0 +1,14 @@
+{
+  "v": 1,
+  "id": "00000000-0000-4000-8000-000000000001",
+  "from": "aaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "to": "77777777777777777777777774",
+  "body": {
+    "type": "permission_answer",
+    "request_id": "00000000-0000-4000-8000-000000000001",
+    "decision": {
+      "type": "selected",
+      "option_id": "yes"
+    }
+  }
+}

@@ -3,3 +3,7 @@
 #![forbid(unsafe_code)]
 
 pub mod home;
+
+pub mod worker;
+
+mod terminal;

@@ -6,11 +6,26 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 
-[dev-dependencies]
+[dependencies]
 agent-client-protocol.workspace = true
+async-trait.workspace = true
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+navarch-proto.workspace = true
+
+[dev-dependencies]
 clap.workspace = true
 tempfile.workspace = true
-tokio.workspace = true
 
 [lints]
 workspace = true
+
+[features]
+testing = []
+
+[[bin]]
+name = "fake-acp-agent"
+path = "tests/support/fake_agent.rs"
+required-features = ["testing"]
