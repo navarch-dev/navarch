@@ -1,0 +1,16 @@
+# Add existing directories before running tasks. Empty roots refuse all dispatches.
+allowed_roots = [] # e.g. ["~/projects"]
+allowed_agents = ["claude", "codex"]
+max_concurrent_turns = 3
+default = "escalate" # allow | deny | escalate
+
+# Rules are evaluated in order. All reported paths must be within allowed roots.
+[[rule]]
+kind = "edit"
+within_roots = true
+decision = "allow"
+
+# [[rule]]
+# kind = "execute"
+# command_prefix = ["cargo test", "cargo build"]
+# decision = "allow"

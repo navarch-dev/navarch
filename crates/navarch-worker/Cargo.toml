@@ -1,0 +1,30 @@
+[package]
+name = "navarch-worker"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+navarch-transport.workspace = true
+
+navarch-proto.workspace = true
+navarch-policy.workspace = true
+navarch-acp.workspace = true
+async-trait.workspace = true
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+thiserror.workspace = true
+uuid.workspace = true
+tempfile.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+navarch-acp = { workspace = true, features = ["testing"] }
+tempfile.workspace = true
+
+[lints]
+workspace = true

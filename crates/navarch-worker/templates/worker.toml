@@ -1,0 +1,17 @@
+# Prefer authenticated direct TCP links announced by the hub.
+# direct = true
+
+# Adapter commands are executed directly, without a shell.
+display_name = "My worker"
+
+[[agents]]
+name = "claude"
+command = "npx"
+args = ["-y", "@agentclientprotocol/claude-agent-acp"]
+# mode = "default" # Built-in: ask for permissions.
+
+[[agents]]
+name = "codex"
+command = "npx"
+args = ["-y", "@agentclientprotocol/codex-acp"]
+# mode = "workspace-write" # Built-in: workspace sandbox, permission requests.

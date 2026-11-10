@@ -1,0 +1,69 @@
+[workspace]
+members = ["crates/*"]
+resolver = "3"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+license = "Apache-2.0"
+repository = "https://github.com/navarch-dev/navarch"
+
+[workspace.dependencies]
+if-addrs = "0.15"
+plist = "1"
+configparser = "3"
+chrono = { version = "0.4", default-features = false, features = ["std"] }
+agent-client-protocol = { version = "5.1.0", features = ["process"] }
+async-trait = "0.1"
+rustix = { version = "1.1", features = ["fs", "system"] }
+toml = "0.8"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt"] }
+anyhow = "1.0"
+clap = { version = "4.5", features = ["derive"] }
+data-encoding = "2.9"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tempfile = "3.23"
+thiserror = "2.0"
+tokio = { version = "1.52", features = ["macros", "rt-multi-thread", "sync", "time", "process", "io-util", "io-std", "test-util", "net", "signal"] }
+uuid = { version = "1.18", features = ["serde", "v4"] }
+
+bytes = "1"
+futures-util = { version = "0.3", features = ["sink"] }
+tokio-util = { version = "0.7", features = ["codec"] }
+rand = "0.8"
+x25519-dalek = { version = "2", features = ["static_secrets", "getrandom", "zeroize"] }
+spake2 = "0.4"
+snow = "0.10"
+chacha20poly1305 = "0.10"
+zeroize = { version = "1", features = ["derive"] }
+base64 = "0.22"
+axum = { version = "0.8", features = ["ws"] }
+tokio-tungstenite = { version = "0.29", features = ["rustls-tls-webpki-roots"] }
+navarch-relay = { path = "crates/navarch-relay" }
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+blake2 = "0.10"
+rmcp = { version = "1", default-features = false, features = ["server", "transport-io"] }
+navarch-store = { path = "crates/navarch-store" }
+navarch-transport = { path = "crates/navarch-transport" }
+navarch-crypto = { path = "crates/navarch-crypto" }
+navarch-hub = { path = "crates/navarch-hub" }
+navarch-proto = { path = "crates/navarch-proto" }
+navarch-policy = { path = "crates/navarch-policy" }
+navarch-acp = { path = "crates/navarch-acp" }
+navarch-worker = { path = "crates/navarch-worker" }
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+missing_docs = "warn"
+
+[workspace.lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true
