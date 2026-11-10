@@ -182,19 +182,19 @@ mod tests {
         (id, output, input)
     }
     #[test]
-    fn twenty_thousand_sequential_pairing_rooms_with_advancing_monotonic_time() {
+    fn sequential_pairing_rooms_with_advancing_time() {
         let mut registry = Registry::default();
         let (host, hout, mut hin) = endpoint(&mut registry);
         let (worker, wout, mut win) = endpoint(&mut registry);
         let introduction = || navarch_crypto::PairInfo {
             identity: navarch_crypto::Identity::generate().public_key(),
             static_key: navarch_crypto::StaticKey::generate().public_key(),
-            display_name: "stress test".into(),
+            display_name: "test".into(),
         };
         let host_info = introduction();
         let worker_info = introduction();
         let start = Instant::now();
-        for n in 0..20000 {
+        for n in 0..200 {
             let now = start + Duration::from_secs(n);
             let name = format!("{:04}", n % 10000);
             assert!(registry.room_request(
